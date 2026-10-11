@@ -27,7 +27,7 @@ async def run(args) -> None:
     os.makedirs(os.path.join(args.out, "wav"), exist_ok=True)
     dit = None if args.dit == "none" else args.dit
     tts = await DialectTTS.load(args.model, dit, dit_cache=args.dit_cache, max_concurrency=args.concurrency,
-                                head_tokens=args.head_tokens)
+                                head_tokens=args.head_tokens, w8a8=args.precision == "int8")
     try:
         if args.mode != "none":
             for v in voices:
@@ -66,6 +66,8 @@ if __name__ == "__main__":
     ap.add_argument("--dit", default="none", help="distilled LocDiT (path or repo:file); none = the original LocDiT")
     ap.add_argument("--dit-cache", default=None)
     ap.add_argument("--head-tokens", type=int, default=0, help="0 = no head start (quality runs)")
+    ap.add_argument("--precision", choices=["bf16", "int8"], default="bf16",
+                    help="bf16: the model itself (a new model's SmoothQuant statistics are not calibrated yet)")
     ap.add_argument("--mode", choices=["ref", "prompt_ref", "none"], default="ref")
     ap.add_argument("--seeds", type=int, nargs="+", default=[2000, 2001])
     ap.add_argument("--adapter-map", help="JSON {group: adapter or null} instead of the items' current adapters")
