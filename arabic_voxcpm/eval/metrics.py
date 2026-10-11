@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
 
@@ -25,6 +26,24 @@ def normalize_ar(s: str) -> str:
     s = s.replace("ک", "ك").replace("ی", "ي")
     s = re.sub(r"[^\w\s]", " ", s)
     return " ".join(s.split())
+
+
+_SPELL = None
+
+
+def spell_numbers(text: str, group: str) -> str:
+    """Digits, times, amounts and percentages as Arabic words, by the inference library's normalizer (formal for the
+    msa group, colloquial otherwise). Loaded from its file: the library's package needs the engine's dependencies."""
+    global _SPELL
+    if _SPELL is None:
+        import importlib.util
+
+        path = os.environ.get("ARABIC_TEXT_PY", "/workspace/nanovllm-voxcpm-opt/nanovllm_voxcpm/arabic_text.py")
+        spec = importlib.util.spec_from_file_location("arabic_text", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _SPELL = mod.normalize
+    return _SPELL(text, "msa" if group == "msa" else "colloquial")
 
 
 def error_rates(ref: str, hyp: str) -> dict:

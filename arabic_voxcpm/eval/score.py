@@ -33,12 +33,15 @@ class Scorer:
             self._voice[path] = self.emb(M.load16k(path))
         return self._voice[path]
 
-    def __call__(self, path: str, text: str, voice_path: str | None, group: str) -> dict:
+    def __call__(self, path: str, text: str, voice_path: str | None, group: str, numbers: bool = False) -> dict:
         audio = M.load16k(path)
         hyp = self.asr(path)
         hyp2 = self.asr2(audio)
-        second = {f"{k}_c": v for k, v in M.error_rates(text, hyp2).items()}
-        row = {"hyp": hyp, "hyp_c": hyp2, **M.error_rates(text, hyp), **second, "utmos": self.utmos(audio),
+        ref, h1, h2 = text, hyp, hyp2
+        if numbers:  # numbers compared as words on both sides (numbers.py)
+            ref, h1, h2 = (M.spell_numbers(t, group) for t in (text, hyp, hyp2))
+        second = {f"{k}_c": v for k, v in M.error_rates(ref, h2).items()}
+        row = {"hyp": hyp, "hyp_c": hyp2, **M.error_rates(ref, h1), **second, "utmos": self.utmos(audio),
                **self.dns(audio), **self.adi(audio, group), "duration_s": len(audio) / M.SR}
         if voice_path:
             row["voice_sim"] = float(self.emb(audio) @ self.voice_emb(voice_path))
@@ -79,7 +82,7 @@ def score_run(run: str, scorer: Scorer) -> None:
             it = items[iid]
             voice = voices[it["voice"]] if cfg.get("mode", "ref") != "none" else None
             row = {"file": name, "id": iid, "seed": int(seed), "group": it["group"]}
-            row.update(scorer(os.path.join(run, "wav", name), it["text"], voice, it["group"]))
+            row.update(scorer(os.path.join(run, "wav", name), it["text"], voice, it["group"], it.get("numbers", False)))
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     fill_missing(out, lambda r: os.path.join(run, "wav", r["file"]), scorer.adi)
     print(f"scored {run}")

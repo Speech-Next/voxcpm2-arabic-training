@@ -45,7 +45,7 @@ async def run(args) -> None:
             text = (args.text_prefix.format(group=it["group"]) if args.text_prefix else "") + it["text"]
             async with sem:
                 audio = await tts.synthesize(text, dialect=adapter, voice=None if args.mode == "none" else it["voice"],
-                                             seed=seed, max_patches=args.max_patches)
+                                             seed=seed, max_patches=args.max_patches, normalize=args.normalize)
             sf.write(path, audio, tts.sample_rate)
 
         t0 = time.time()
@@ -74,4 +74,6 @@ if __name__ == "__main__":
     ap.add_argument("--text-prefix", default="", help="e.g. '[{group}] ' for a dialect-tagged model")
     ap.add_argument("--concurrency", type=int, default=128)
     ap.add_argument("--max-patches", type=int, default=400)
+    ap.add_argument("--no-normalize", dest="normalize", action="store_false",
+                    help="the text as it is (digits included), without the library's text normalization")
     asyncio.run(run(ap.parse_args()))
