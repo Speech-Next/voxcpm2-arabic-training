@@ -4,8 +4,8 @@
 
 Per utterance: Whisper large-v3 and Cohere Transcribe Arabic transcripts, CER / WER of each against the item text
 (Arabic-normalized; cer / wer = Whisper, cer_c / wer_c = Cohere), babble, UTMOS, DNSMOS, WavLM-SV similarity to the
-cloned voice, duration. Results are cached in <run>/scores.jsonl, so a rerun only
-scores new files. --gt scores the set's ground-truth recordings into <set>/gt_scores.jsonl: the ASR's own error on
+cloned voice, dialect region (ADI-5: adi_label, adi_ok, adi_p), duration. Results are cached in <run>/scores.jsonl,
+so a rerun only scores new files and fills metrics that older rows lack (--device for those: cpu next to training). --gt scores the set's ground-truth recordings into <set>/gt_scores.jsonl: the ASR's own error on
 real speech of each dialect, the floor a model is compared against.
 """
 
@@ -25,6 +25,7 @@ class Scorer:
         self.dns = M.DNSMOS()
         self.utmos = M.UTMOS()
         self.emb = M.SpeakerEmbedder()
+        self.adi = M.DialectID()
         self._voice = {}
 
     def voice_emb(self, path):
@@ -32,16 +33,36 @@ class Scorer:
             self._voice[path] = self.emb(M.load16k(path))
         return self._voice[path]
 
-    def __call__(self, path: str, text: str, voice_path: str | None) -> dict:
+    def __call__(self, path: str, text: str, voice_path: str | None, group: str) -> dict:
         audio = M.load16k(path)
         hyp = self.asr(path)
         hyp2 = self.asr2(audio)
         second = {f"{k}_c": v for k, v in M.error_rates(text, hyp2).items()}
         row = {"hyp": hyp, "hyp_c": hyp2, **M.error_rates(text, hyp), **second, "utmos": self.utmos(audio),
-               **self.dns(audio), "duration_s": len(audio) / M.SR}
+               **self.dns(audio), **self.adi(audio, group), "duration_s": len(audio) / M.SR}
         if voice_path:
             row["voice_sim"] = float(self.emb(audio) @ self.voice_emb(voice_path))
         return row
+
+
+def fill_missing(out: str, audio_path, adi) -> int:
+    """Rows of ``out`` scored before the dialect-ID metric existed get it (the file rewritten in place)."""
+    if not os.path.exists(out):
+        return 0
+    rows = [json.loads(line) for line in open(out, encoding="utf-8")]
+    todo = [r for r in rows if "adi_label" not in r]
+    for r in todo:
+        r.update(adi(M.load16k(audio_path(r)), r["group"]))
+    if todo:
+        with open(out + ".tmp", "w", encoding="utf-8") as f:
+            f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+        os.replace(out + ".tmp", out)
+    return len(todo)
+
+
+def gt_audio(set_dir: str):
+    paths = {it["id"]: it["gt_audio"] for it in map(json.loads, open(os.path.join(set_dir, "items.jsonl"), encoding="utf-8"))}
+    return lambda r: paths[r["id"]]
 
 
 def score_run(run: str, scorer: Scorer) -> None:
@@ -58,8 +79,9 @@ def score_run(run: str, scorer: Scorer) -> None:
             it = items[iid]
             voice = voices[it["voice"]] if cfg.get("mode", "ref") != "none" else None
             row = {"file": name, "id": iid, "seed": int(seed), "group": it["group"]}
-            row.update(scorer(os.path.join(run, "wav", name), it["text"], voice))
+            row.update(scorer(os.path.join(run, "wav", name), it["text"], voice, it["group"]))
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    fill_missing(out, lambda r: os.path.join(run, "wav", r["file"]), scorer.adi)
     print(f"scored {run}")
 
 
@@ -69,8 +91,9 @@ def score_gt(set_dir: str, scorer: Scorer) -> None:
     with open(out, "a", encoding="utf-8") as f:
         for it in map(json.loads, open(os.path.join(set_dir, "items.jsonl"), encoding="utf-8")):
             if it["gt_audio"] and it["id"] not in done:
-                f.write(json.dumps({"id": it["id"], "group": it["group"], **scorer(it["gt_audio"], it["text"], None)},
-                                   ensure_ascii=False) + "\n")
+                f.write(json.dumps({"id": it["id"], "group": it["group"],
+                                    **scorer(it["gt_audio"], it["text"], None, it["group"])}, ensure_ascii=False) + "\n")
+    fill_missing(out, gt_audio(set_dir), scorer.adi)
     print(f"scored ground truth of {set_dir}")
 
 
@@ -78,7 +101,17 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("runs", nargs="*")
     ap.add_argument("--gt", help="also score this set's ground-truth recordings")
+    ap.add_argument("--fill-only", action="store_true", help="only add the metrics that scored rows lack")
+    ap.add_argument("--device", default="cuda", help="with --fill-only")
     args = ap.parse_args()
+    if args.fill_only:
+        adi = M.DialectID(args.device)
+        if args.gt:
+            print(args.gt, fill_missing(os.path.join(args.gt, "gt_scores.jsonl"), gt_audio(args.gt), adi), "rows filled")
+        for r in args.runs:
+            print(r, fill_missing(os.path.join(r, "scores.jsonl"), lambda x, r=r: os.path.join(r, "wav", x["file"]), adi),
+                  "rows filled")
+        raise SystemExit
     s = Scorer()
     if args.gt:
         score_gt(args.gt, s)

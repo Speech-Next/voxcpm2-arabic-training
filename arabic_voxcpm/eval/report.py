@@ -21,7 +21,8 @@ import numpy as np
 METRICS = [("cer", 100, "CER %", -1), ("wer", 100, "WER %", -1), ("cer_c", 100, "CER % (Cohere)", -1),
            ("wer_c", 100, "WER % (Cohere)", -1), ("cer_min", 100, "CER % (best ASR)", -1),
            ("wer_min", 100, "WER % (best ASR)", -1), ("utmos", 1, "UTMOS", 1),
-           ("voice_sim", 1, "speaker sim", 1), ("dnsmos_ovrl", 1, "DNSMOS", 1)]
+           ("voice_sim", 1, "speaker sim", 1), ("dnsmos_ovrl", 1, "DNSMOS", 1),
+           ("adi_ok", 100, "dialect region %", 1)]
 
 
 def load(run: str) -> dict:

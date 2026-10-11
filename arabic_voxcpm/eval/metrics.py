@@ -71,6 +71,37 @@ class CohereASR:
         return (text[0] if isinstance(text, list) else text).strip()
 
 
+class DialectID:
+    """Spoken Arabic dialect identification over 5 regions (Tamyïz ADI-5: MMS-300m fine-tuned on MGB-3 broadcast
+    speech, CC BY 4.0). A coarse check that a group's speech is heard as its region; it also hears the cloned voice's
+    own accent, so compare models with the same reference voices."""
+
+    REPO = "badrex/mms-300m-arabic-dialect-identifier"
+    # evaluation group -> ADI-5 label (the model card: Egyptian includes Sudanese, Gulf includes Iraqi and Yemeni)
+    REGION = {"msa": "MSA", "eg": "Egyptian", "sd": "Egyptian", "ps": "Levantine", "lb": "Levantine", "sy": "Levantine",
+              "iq": "Gulf", "ye": "Gulf", "bh": "Gulf", "khaliji": "Gulf", "najdi": "Gulf", "hejazi": "Gulf", "sa": "Gulf",
+              "dz": "Maghrebi", "ma": "Maghrebi", "tn": "Maghrebi", "ly": "Maghrebi"}
+
+    def __init__(self, device: str = "cuda"):
+        import torch
+        from transformers import AutoFeatureExtractor, Wav2Vec2ForSequenceClassification
+
+        self.torch = torch
+        self.fe = AutoFeatureExtractor.from_pretrained(self.REPO)
+        self.model = Wav2Vec2ForSequenceClassification.from_pretrained(self.REPO).to(device).eval()
+        self.labels = [self.model.config.id2label[i] for i in range(self.model.config.num_labels)]
+
+    def __call__(self, audio: np.ndarray, group: str) -> dict:
+        x = self.fe(audio, sampling_rate=SR, return_tensors="pt").input_values.to(self.model.device)
+        with self.torch.inference_mode():
+            p = self.model(x).logits.float().softmax(-1)[0].cpu().numpy()
+        label = self.labels[int(p.argmax())]
+        want = self.REGION.get(group)
+        if want is None:
+            return {"adi_label": label}
+        return {"adi_label": label, "adi_ok": float(label == want), "adi_p": float(p[self.labels.index(want)])}
+
+
 class DNSMOS:
     """Microsoft DNSMOS (dnsmos_local.py logic), non-personalized P.835 + P.808."""
 
