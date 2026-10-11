@@ -44,14 +44,33 @@ class TaggedEmbedding(nn.Module):
         return out
 
 
+def _register_tags(raw) -> None:
+    """The tags exist in the vocabulary; as special added tokens a text "<reserved_N>" becomes that one id."""
+    from transformers import AddedToken
+
+    raw.add_tokens([AddedToken(dialects.tag_token(d), special=True, normalized=False) for d in dialects.DIALECTS],
+                   special_tokens=True)
+
+
 class Tokenizer:
-    """Text -> ids exactly as the model tokenizes at inference (upstream wrapper), plus the dialect tag ids."""
+    """Text -> ids exactly as an inference engine tokenizes them: the upstream wrapper over the tokenizer files with the
+    tags registered, saved and loaded back. (Registered in memory, the tokenizer puts a word-start mark after a tag;
+    loaded from the saved files it does not. Training uses the saved form, which is what an engine reads.)"""
 
     def __init__(self, model_dir: str):
+        import tempfile
+
         from transformers import LlamaTokenizerFast
         from voxcpm.model.utils import mask_multichar_chinese_tokens
 
-        self.raw = LlamaTokenizerFast.from_pretrained(model_dir)
+        raw = LlamaTokenizerFast.from_pretrained(model_dir)
+        if raw.convert_ids_to_tokens(raw(dialects.tag_token("msa"), add_special_tokens=False)["input_ids"][:1]) != \
+                [dialects.tag_token("msa")]:
+            _register_tags(raw)
+            self.saved = tempfile.mkdtemp(prefix="arabic-voxcpm-tok-")
+            raw.save_pretrained(self.saved)
+            raw = LlamaTokenizerFast.from_pretrained(self.saved)
+        self.raw = raw
         self.wrapped = mask_multichar_chinese_tokens(self.raw)
 
     def __call__(self, text: str) -> list[int]:
@@ -146,9 +165,14 @@ def export_merged(src_dir: str, ckpt: str, out_dir: str) -> None:
     for f in os.listdir(src_dir):
         if f not in ("model.safetensors", "adapters", "adapters.json", "README.md") and os.path.isfile(os.path.join(src_dir, f)):
             shutil.copy(os.path.join(src_dir, f), out_dir)
-    tok.raw.add_special_tokens({"additional_special_tokens": [dialects.tag_token(d) for d in dialects.DIALECTS]},
-                               replace_additional_special_tokens=False)
-    tok.raw.save_pretrained(out_dir)
+    tok.raw.save_pretrained(out_dir)  # with the tags registered (Tokenizer)
+    from transformers import LlamaTokenizerFast
+    from voxcpm.model.utils import mask_multichar_chinese_tokens
+
+    exported = mask_multichar_chinese_tokens(LlamaTokenizerFast.from_pretrained(out_dir))  # as an inference engine loads it
+    for d in dialects.DIALECTS:
+        text = dialects.tag_token(d) + "هلا والله"
+        assert list(exported(text)) == tok(text) and tok(text)[0] == tok.tag_id(d), d
     json.dump({"tags": {d: dialects.tag_token(d) for d in dialects.DIALECTS}, "aliases": dialects.ALIASES},
               open(os.path.join(out_dir, "dialects.json"), "w"), indent=1)
     print(f"merged {merged} LoRA layers and {len(tags)} dialect tags -> {out_dir}")

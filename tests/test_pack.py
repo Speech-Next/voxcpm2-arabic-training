@@ -49,3 +49,21 @@ def test_collate_pads_right():
     batch = pack.collate([a, b])
     assert batch["text_tokens"].shape == (2, 11) and batch["audio_feats"].shape == (2, 11, 4, 64)
     assert batch["loss_mask"][0, 6:].sum() == 0 and batch["labels"][0].tolist().index(1) == 5
+
+
+def test_tags_tokenize_like_inference():
+    """A tagged text is the tag's one id followed by the text's ids without the leading word-start mark."""
+    import os
+
+    import pytest
+
+    from arabic_voxcpm.train import dialects
+    from arabic_voxcpm.train.model import Tokenizer
+
+    model = "/workspace/models/VoxCPM2-Arabic-Dialects"
+    if not os.path.isdir(model):
+        pytest.skip("needs the model's tokenizer")
+    tok = Tokenizer(model)
+    for d in ("najdi", "msa", "moroccan"):
+        ids = tok(dialects.tag_token(d) + "هلا والله")
+        assert ids[0] == tok.tag_id(d) and ids[1:] == tok("هلا والله")[1:]

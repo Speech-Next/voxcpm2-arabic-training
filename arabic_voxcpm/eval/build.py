@@ -32,6 +32,10 @@ VOICES_PER_GROUP = 2
 # the current model's adapter for each group (the baseline); None = the base model
 CURRENT_ADAPTER = {"eg": "egyptian", "ps": "palestinian", "lb": "jordanian", "sy": "jordanian", "iq": "iraqi",
                    "sa": "saudi", "najdi": "najdi", "hejazi": "hejazi", "khaliji": "emirati", "bh": "qatari"}
+# the tagged model's dialect for each group (generate.py --adapter-map dialect_map.json)
+DIALECT_OF_GROUP = {"eg": "egyptian", "ps": "palestinian", "lb": "lebanese", "sy": "syrian", "iq": "iraqi", "sa": "saudi",
+                    "najdi": "najdi", "hejazi": "hejazi", "khaliji": "gulf", "bh": "bahraini", "msa": "msa",
+                    "sd": "sudanese", "ye": "yemeni", "dz": "algerian", "ma": "moroccan", "tn": "tunisian", "ly": "libyan"}
 LAHGTNA_HELDOUT = ["bh", "dz", "eg", "lb", "ly", "ps", "sd", "sy", "tn", "ye"]
 LAHGTNA_TEXT_ONLY = ["iq", "ma", "sa"]
 SADA_GROUPS = ["najdi", "hejazi", "khaliji", "msa"]
@@ -136,6 +140,7 @@ def main(args) -> None:
         for it in items:
             f.write(json.dumps(it, ensure_ascii=False) + "\n")
     json.dump(voices, open(os.path.join(args.out, "voices.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    json.dump(DIALECT_OF_GROUP, open(os.path.join(args.out, "dialect_map.json"), "w"), indent=1)
     json.dump({"speakers": sorted(heldout_speakers), "uids": sorted(heldout_uids),
                "texts": sorted({normalize_ar(it["text"]) for it in items})},
               open(os.path.join(args.out, "heldout.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=0)

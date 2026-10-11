@@ -71,7 +71,8 @@ class TrainSet(torch.utils.data.Dataset):
         self.store, self.p_ref, self.p_no_tag = store, p_ref, p_no_tag
         self.ref_frames = (int(ref_s[0] * FPS), int(ref_s[1] * FPS))
         self.seed, self.epoch = seed, 0
-        self.tag_id = {d: tokenize.tag_id(d) for d in dialects.DIALECTS}
+        # as inference tokenizes them: tokenize(tag + text), and the text alone for the untagged samples
+        self.tagged_ids = [tokenize(dialects.tag_token(r["dialect"]) + r["text"]) for r in self.rows]
         self.text_ids = [tokenize(r["text"]) for r in self.rows]
         by = defaultdict(list)
         for i, r in enumerate(self.rows):
@@ -83,14 +84,12 @@ class TrainSet(torch.utils.data.Dataset):
 
     def length(self, i: int) -> int:
         """Upper bound of the packed length (with the longest reference)."""
-        return len(self.text_ids[i]) + 6 + (self.rows[i]["frames"] + 3) // 4 + (self.ref_frames[1] + 3) // 4
+        return len(self.tagged_ids[i]) + 7 + (self.rows[i]["frames"] + 3) // 4 + (self.ref_frames[1] + 3) // 4
 
     def __getitem__(self, i: int) -> dict:
         rng = random.Random((self.seed, self.epoch, i).__hash__())
         r = self.rows[i]
-        ids = list(self.text_ids[i])
-        if rng.random() >= self.p_no_tag:
-            ids = [self.tag_id[r["dialect"]]] + ids
+        ids = self.tagged_ids[i] if rng.random() >= self.p_no_tag else self.text_ids[i]
         target = pack.patches(self.store[r["uid"]].float())
         others = [j for j in self.same_speaker[i] if j != i]
         if others and rng.random() < self.p_ref:
