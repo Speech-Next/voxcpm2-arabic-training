@@ -11,7 +11,7 @@ unused: mean mode), x <- x - dt_j * u(x, mu, t_j, cond, dt_j), over a fixed grid
   samples, --fake-steps updates per student update) against the real score (the frozen teacher with CFG 2.0,
   CFG-zero*); the student follows x0_fake - x0_real, normalized, plus --reg times the regression to the teacher.
 Checkpoints are what the inference engine loads (TurboConfig.dit_checkpoint): {"state_dict": feat_decoder.estimator.*,
-"steps", "schedule": [(t, dt), ...], "mean_mode": True}.
+"steps", "schedule": [(t, dt), ...], "mean_mode": True, and "dit_layers" for a student with fewer layers}.
 """
 
 from __future__ import annotations
@@ -147,8 +147,10 @@ def main(args) -> None:
     for p in teacher.parameters():
         p.requires_grad = False
     student = copy.deepcopy(teacher).float()
+    meta = {}
     if args.layers:
         emit({"event": "layers", "kept": drop_layers(student, args.layers)})
+        meta["dit_layers"] = args.layers
     if args.init:
         student.load_state_dict(load_student(args.init))
     student.train()
@@ -220,10 +222,10 @@ def main(args) -> None:
         if step % args.val_every == 0 or step == args.iters:
             v = validate(student, data, schedule, args.batch)
             emit({"step": step, "event": "val", **v})
-            save(student, os.path.join(args.out, f"{args.stage}-last.pt"), schedule, {"step": step, **v})
+            save(student, os.path.join(args.out, f"{args.stage}-last.pt"), schedule, {"step": step, **v, **meta})
             if args.stage == "mse" and v["val_mse_teacher"] < best:
                 best = v["val_mse_teacher"]
-                save(student, os.path.join(args.out, f"{args.stage}-best.pt"), schedule, {"step": step, **v})
+                save(student, os.path.join(args.out, f"{args.stage}-best.pt"), schedule, {"step": step, **v, **meta})
     emit({"event": "done", "best": best})
 
 
