@@ -13,6 +13,7 @@ import glob
 import json
 import os
 import random
+import re
 from collections import defaultdict
 
 import torch
@@ -22,10 +23,11 @@ from arabic_voxcpm.eval.metrics import normalize_ar
 from arabic_voxcpm.train import dialects, pack
 
 FPS = 25  # latent frames per second
+_DIGIT = re.compile(r"[0-9\u0660-\u0669\u06f0-\u06f9]")
 
 
 def select_rows(corpora=manifest.CORPORA, heldout: str | None = None, min_s: float = 1.0, max_s: float = 20.0) -> list[dict]:
-    """Training rows: a known dialect, 1-20 s, plausible speaking rate, nothing of the evaluation set."""
+    """Training rows: a known dialect, 1-20 s, plausible speaking rate, no digits, nothing of the evaluation set."""
     held = json.load(open(heldout, encoding="utf-8")) if heldout else {"speakers": [], "uids": [], "texts": []}
     spk, uids, texts = set(held["speakers"]), set(held["uids"]), set(held["texts"])
     out = []
@@ -36,8 +38,8 @@ def select_rows(corpora=manifest.CORPORA, heldout: str | None = None, min_s: flo
             if (d is None or r.get("split") == "test" or r["speaker"] in spk or r["uid"] in uids
                     or not (min_s <= sec <= max_s) or not r["text"]):
                 continue
-            if not 2.0 <= len(r["text"]) / sec <= 35.0 or normalize_ar(r["text"]) in texts:
-                continue
+            if not 2.0 <= len(r["text"]) / sec <= 35.0 or normalize_ar(r["text"]) in texts or _DIGIT.search(r["text"]):
+                continue  # digits: the audio reads them in dialect, requests get them spelled out (text normalization)
             out.append({"uid": r["uid"], "source": c, "dialect": d, "speaker": f"{c}:{r['speaker']}",
                         "text": r["text"], "frames": r["frames"], "split": r.get("split", "train")})
     return out
