@@ -31,14 +31,14 @@ import torch.nn.functional as F
 from arabic_voxcpm.distill import sampler
 
 
-def load_estimator(teacher_dir: str):
+def load_estimator(teacher_dir: str, device="cuda"):
     """The teacher's LocDiT (feat_decoder.estimator), the rest of the model freed."""
     from voxcpm.model.voxcpm2 import VoxCPM2Model
 
     model = VoxCPM2Model.from_local(teacher_dir, optimize=False, device="cpu")  # only the LocDiT goes to the GPU
     est = model.feat_decoder.estimator
     del model
-    return est.cuda().eval()
+    return est.to(device).eval()
 
 
 class TeacherData:
@@ -120,7 +120,7 @@ def validate(student, data, schedule, bs: int) -> dict:
     student.eval()
     se_t = se_r = n = 0.0
     for b in data.val_batches(bs):
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast(torch.device(data.device).type, dtype=torch.bfloat16):
             x = student_solve(student, b["z"], b["mu"], b["cond"], schedule)
         se_t += float(((x - b["x"]) ** 2).mean(dim=(1, 2)).sum())
         if "target" in b:
@@ -142,7 +142,8 @@ def main(args) -> None:
         print(json.dumps(rec), flush=True)
 
     schedule = parse_schedule(args.schedule)
-    teacher = load_estimator(args.teacher)
+    dev = torch.device(args.device)
+    teacher = load_estimator(args.teacher, dev)
     for p in teacher.parameters():
         p.requires_grad = False
     student = copy.deepcopy(teacher).float()
@@ -153,7 +154,7 @@ def main(args) -> None:
     student.train()
     for p in student.parameters():
         p.requires_grad = True
-    data = TeacherData(args.data, args.val_shards)
+    data = TeacherData(args.data, args.val_shards, dev)
     emit({"event": "data", "train_rows": len(data.train["mu"]), "val_rows": len(data.val["mu"]),
           "student_params": sum(p.numel() for p in student.parameters()), "schedule": schedule})
     opt = torch.optim.AdamW(student.parameters(), lr=args.lr, betas=(0.9, 0.99), weight_decay=0.0)
@@ -172,34 +173,34 @@ def main(args) -> None:
             g["lr"] = lr
         b = data.batch(args.batch, gen=gen)
         if args.stage == "mse":
-            with torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.autocast(dev.type, dtype=torch.bfloat16):
                 x = student_solve(student, b["z"], b["mu"], b["cond"], schedule)
             loss = F.mse_loss(x, b["x"])
             if args.real > 0:
                 loss = loss + args.real * F.mse_loss(x, b["target"])
-            rec = {"loss": float(loss)}
+            rec = {"loss": loss.item()}
         else:
             # fake score: flow matching on the student's (detached) samples
             for _ in range(args.fake_steps):
                 fb = data.batch(args.batch, gen=gen)
-                with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                with torch.no_grad(), torch.autocast(dev.type, dtype=torch.bfloat16):
                     xs = student_solve(student, fb["z"], fb["mu"], fb["cond"], schedule)
-                t = torch.sigmoid(torch.randn(len(xs), device="cuda") - 0.4)
+                t = torch.sigmoid(torch.randn(len(xs), device=dev) - 0.4)
                 n = torch.randn_like(xs)
                 xt = (1 - t[:, None, None]) * xs + t[:, None, None] * n
-                with torch.autocast("cuda", dtype=torch.bfloat16):
+                with torch.autocast(dev.type, dtype=torch.bfloat16):
                     vf = fake(xt, fb["mu"], t, fb["cond"], torch.zeros_like(t)).float()
                 fl = F.mse_loss(vf, n - xs)
                 fake_opt.zero_grad(set_to_none=True)
                 fl.backward()
                 torch.nn.utils.clip_grad_norm_(fake.parameters(), 1.0)
                 fake_opt.step()
-            with torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.autocast(dev.type, dtype=torch.bfloat16):
                 x = student_solve(student, b["z"], b["mu"], b["cond"], schedule)
-            t = torch.rand(len(x), device="cuda") * 0.96 + 0.02
+            t = torch.rand(len(x), device=dev) * 0.96 + 0.02
             n = torch.randn_like(x)
             xt = (1 - t[:, None, None]) * x.detach() + t[:, None, None] * n
-            with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.no_grad(), torch.autocast(dev.type, dtype=torch.bfloat16):
                 x0_real = xt - t[:, None, None] * teacher_velocity(teacher, xt, b["mu"], b["cond"], t, args.cfg)
                 x0_fake = xt - t[:, None, None] * fake(xt, b["mu"], t, b["cond"], torch.zeros_like(t)).float()
                 w = (x.detach() - x0_real).abs().mean(dim=(1, 2), keepdim=True).clamp(min=1e-4)
@@ -207,7 +208,7 @@ def main(args) -> None:
             dmd = 0.5 * F.mse_loss(x, (x - grad).detach())
             reg = F.mse_loss(x, b["x"])
             loss = dmd + args.reg * reg
-            rec = {"loss_dmd": float(dmd), "loss_reg": float(reg), "loss_fake": float(fl)}
+            rec = {"loss_dmd": dmd.item(), "loss_reg": reg.item(), "loss_fake": fl.item()}
         opt.zero_grad(set_to_none=True)
         loss.backward()
         gn = torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
@@ -248,4 +249,5 @@ if __name__ == "__main__":
     ap.add_argument("--val-every", type=int, default=500)
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--device", default="cuda")
     main(ap.parse_args())
