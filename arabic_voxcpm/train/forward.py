@@ -13,7 +13,9 @@ from __future__ import annotations
 import torch
 
 
-def forward(model, text_tokens, text_mask, audio_feats, audio_mask, loss_mask, labels, progress: float = 0.0, **_):
+def dit_inputs(model, text_tokens, text_mask, audio_feats, audio_mask, loss_mask, **_):
+    """The LMs over the batch, then the LocDiT's inputs at the loss positions: (mu [M, C], target [M, D, P],
+    cond = previous patch [M, D, P], lm_hidden [B, T, H], loss positions [B, T] bool)."""
     dtype = model._dtype()
     dev = model.device
     text_tokens = text_tokens.to(dev, dtype=torch.long)
@@ -21,7 +23,6 @@ def forward(model, text_tokens, text_mask, audio_feats, audio_mask, loss_mask, l
     audio_feats = audio_feats.to(dev, dtype=dtype)
     am = audio_mask.to(dev).bool()
     lm_mask = loss_mask.to(dev).bool()
-    labels = labels.to(dev, dtype=torch.long)
     B, T, P, D = audio_feats.shape
 
     enc = model.enc_to_lm_proj(model.feat_encoder(audio_feats[am].unsqueeze(0)))[0]  # [N_audio, H]
@@ -45,14 +46,21 @@ def forward(model, text_tokens, text_mask, audio_feats, audio_mask, loss_mask, l
     res_out = res_out.to(dtype)
     res_hidden = torch.cat((torch.zeros_like(res_out[:, :1]), res_out[:, :-1]), dim=1)
 
-    # LocDiT on the loss positions only
-    dit_hidden = torch.cat((model.lm_to_dit_proj(lm_hidden[lm_mask]), model.res_to_dit_proj(res_hidden[lm_mask])), dim=-1)
+    mu = torch.cat((model.lm_to_dit_proj(lm_hidden[lm_mask]), model.res_to_dit_proj(res_hidden[lm_mask])), dim=-1)
     feat_cond = torch.cat((torch.zeros_like(audio_feats[:, :1]), audio_feats[:, :-1]), dim=1)
-    gt = audio_feats[lm_mask].transpose(1, 2).contiguous()  # [M, D, P]
+    target = audio_feats[lm_mask].transpose(1, 2).contiguous()  # [M, D, P]
     cond = feat_cond[lm_mask].transpose(1, 2).contiguous()
-    tgt_mask = torch.ones(gt.shape[0], 1, P, device=dev, dtype=dtype)
-    diff_loss = model.feat_decoder.compute_loss(gt, dit_hidden, cond=cond, tgt_mask=tgt_mask, progress=progress)
+    return mu, target, cond, lm_hidden, lm_mask
 
+
+def forward(model, text_tokens, text_mask, audio_feats, audio_mask, loss_mask, labels, progress: float = 0.0, **_):
+    dtype = model._dtype()
+    mu, target, cond, lm_hidden, lm_mask = dit_inputs(model, text_tokens, text_mask, audio_feats, audio_mask, loss_mask)
+    # LocDiT on the loss positions only
+    tgt_mask = torch.ones(target.shape[0], 1, target.shape[2], device=model.device, dtype=dtype)
+    diff_loss = model.feat_decoder.compute_loss(target, mu, cond=cond, tgt_mask=tgt_mask, progress=progress)
+
+    labels = labels.to(model.device, dtype=torch.long)
     stop_logits = model.stop_head(model.stop_actn(model.stop_proj(lm_hidden)))
     stop_losses = model.stop_loss(stop_logits.transpose(1, 2), labels)
     lmf = lm_mask.to(dtype)
