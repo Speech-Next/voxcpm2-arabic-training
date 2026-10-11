@@ -39,11 +39,12 @@ DIALECT_OF_GROUP = {"eg": "egyptian", "ps": "palestinian", "lb": "lebanese", "sy
 LAHGTNA_HELDOUT = ["bh", "dz", "eg", "lb", "ly", "ps", "sd", "sy", "tn", "ye"]
 LAHGTNA_TEXT_ONLY = ["iq", "ma", "sa"]
 SADA_GROUPS = ["najdi", "hejazi", "khaliji", "msa"]
-_LATIN = re.compile(r"[A-Za-z]")
+_LATIN_OR_DIGIT = re.compile(r"[A-Za-z0-9\u0660-\u0669\u06f0-\u06f9]")
 
 
 def text_ok(t: str) -> bool:
-    return 20 <= len(t) <= 160 and len(t.split()) >= 3 and not _LATIN.search(t)
+    """20-160 characters, >= 3 words, Arabic script only (digits are a text normalization question, issue #4)."""
+    return 20 <= len(t) <= 160 and len(t.split()) >= 3 and not _LATIN_OR_DIGIT.search(t)
 
 
 def pick(pool: list[dict], n: int, rng: random.Random) -> list[dict]:
