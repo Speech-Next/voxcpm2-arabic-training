@@ -41,6 +41,11 @@ def metadata(split: str, raw: str) -> list[dict]:
     return pq.read_table(path).to_pylist()
 
 
+def same_text(audio_text, meta_text) -> bool:
+    """The two copies agree; a missing transcript is None in the metadata and "nan" in the audio parquet."""
+    return audio_text == meta_text or (meta_text is None and audio_text in (None, "", "nan"))
+
+
 def keep_row(m: dict, envs: tuple[str, ...]) -> bool:
     return (m["SpeakerDialect"] in DIALECTS and m["Environment"].startswith(envs)
             and 1.5 <= m["SegmentLength"] <= 20 and bool(artext.clean(m["GroundTruthText"] or "")))
@@ -72,7 +77,7 @@ def main(args) -> None:
                 table = pf.read()
                 texts = table.column("text").to_pylist()
                 metas = meta[offset : offset + n]
-                assert len(metas) == n and all(t == m["GroundTruthText"] for t, m in zip(texts, metas)), \
+                assert len(metas) == n and all(same_text(t, m["GroundTruthText"]) for t, m in zip(texts, metas)), \
                     f"{f}: audio and metadata rows disagree"
                 idx = [i for i, m in enumerate(metas) if keep_row(m, envs)]
                 audio = table.column("audio")
