@@ -3,6 +3,10 @@
     python -m arabic_voxcpm.eval.report --base runs/current-teacher runs/candidate [...] [--md report.md]
 
 Pairs are (item, seed) present in both runs. A difference is significant when its 95 % interval excludes 0.
+
+Neither ASR is a clean literal transcriber of dialect: Whisper sometimes drops the first words, Cohere sometimes
+answers dialect with its MSA paraphrase ("بس هذا يمكن" -> "لكن هذا قد يكون") or loops on one letter. The per-clip
+minimum of the two ("best ASR") is reported next to each.
 """
 
 from __future__ import annotations
@@ -15,12 +19,19 @@ from collections import defaultdict
 import numpy as np
 
 METRICS = [("cer", 100, "CER %", -1), ("wer", 100, "WER %", -1), ("cer_c", 100, "CER % (Cohere)", -1),
-           ("wer_c", 100, "WER % (Cohere)", -1), ("utmos", 1, "UTMOS", 1),
+           ("wer_c", 100, "WER % (Cohere)", -1), ("cer_min", 100, "CER % (best ASR)", -1),
+           ("wer_min", 100, "WER % (best ASR)", -1), ("utmos", 1, "UTMOS", 1),
            ("voice_sim", 1, "speaker sim", 1), ("dnsmos_ovrl", 1, "DNSMOS", 1)]
 
 
 def load(run: str) -> dict:
-    return {(r["id"], r["seed"]): r for r in map(json.loads, open(os.path.join(run, "scores.jsonl"), encoding="utf-8"))}
+    rows = {}
+    for r in map(json.loads, open(os.path.join(run, "scores.jsonl"), encoding="utf-8")):
+        for m in ("cer", "wer"):
+            if r.get(m) is not None and r.get(m + "_c") is not None:
+                r[m + "_min"] = min(r[m], r[m + "_c"])
+        rows[r["id"], r["seed"]] = r
+    return rows
 
 
 def boot(d: np.ndarray, n: int = 2000, seed: int = 0) -> tuple[float, float]:
