@@ -14,7 +14,8 @@ from collections import defaultdict
 
 import numpy as np
 
-METRICS = [("cer", 100, "CER %", -1), ("wer", 100, "WER %", -1), ("utmos", 1, "UTMOS", 1),
+METRICS = [("cer", 100, "CER %", -1), ("wer", 100, "WER %", -1), ("cer_c", 100, "CER % (Cohere)", -1),
+           ("wer_c", 100, "WER % (Cohere)", -1), ("utmos", 1, "UTMOS", 1),
            ("voice_sim", 1, "speaker sim", 1), ("dnsmos_ovrl", 1, "DNSMOS", 1)]
 
 

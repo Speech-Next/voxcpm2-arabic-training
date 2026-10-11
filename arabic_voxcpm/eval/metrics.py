@@ -15,8 +15,10 @@ _DIACRITICS = re.compile(r"[ؐ-ًؚ-ٰٟۖ-ۭـ]")  # harakat, Quranic marks, ta
 
 
 def normalize_ar(s: str) -> str:
-    """For CER / WER: diacritics, tatweel and punctuation removed; alef / ya / ta-marbuta / hamza seats unified."""
+    """For CER / WER: diacritics, tatweel and punctuation removed; alef / ya / ta-marbuta / hamza seats unified; ASR
+    event tags (<hesitation>) dropped."""
     s = unicodedata.normalize("NFKC", s)
+    s = re.sub(r"<[^>]*>", " ", s)
     s = _DIACRITICS.sub("", s)
     s = re.sub("[إأآٱ]", "ا", s)
     s = s.replace("ى", "ي").replace("ة", "ه").replace("ؤ", "و").replace("ئ", "ي")
@@ -43,6 +45,30 @@ class WhisperASR:
     def __call__(self, path: str) -> str:
         segs, _ = self.model.transcribe(path, language="ar", beam_size=1, condition_on_previous_text=False)
         return " ".join(s.text for s in segs).strip()
+
+
+class CohereASR:
+    """Cohere Transcribe Arabic (2B Conformer encoder-decoder, dialect-trained): the second ASR, so that a change in one
+    ASR's bias is not read as a change in the speech. (The lahgtna corpus's transcripts were checked with it.)"""
+
+    name = "cohere-transcribe-arabic"
+    REPO = "CohereLabs/cohere-transcribe-arabic-07-2026"
+
+    def __init__(self, device: str = "cuda"):
+        import torch
+        from transformers import AutoProcessor, CohereAsrForConditionalGeneration
+
+        self.torch = torch
+        self.processor = AutoProcessor.from_pretrained(self.REPO)
+        self.model = CohereAsrForConditionalGeneration.from_pretrained(self.REPO, torch_dtype=torch.bfloat16).to(device).eval()
+
+    def __call__(self, audio: np.ndarray) -> str:
+        inputs = self.processor(audio, sampling_rate=SR, return_tensors="pt", language="ar")
+        inputs.to(self.model.device, dtype=self.model.dtype)
+        with self.torch.inference_mode():
+            out = self.model.generate(**inputs, max_new_tokens=256)
+        text = self.processor.decode(out, skip_special_tokens=True)  # a list: one text per (batch) input
+        return (text[0] if isinstance(text, list) else text).strip()
 
 
 class DNSMOS:

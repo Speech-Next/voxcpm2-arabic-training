@@ -8,6 +8,7 @@ from arabic_voxcpm.eval.metrics import error_rates, normalize_ar
 
 def test_normalize_and_rates():
     assert normalize_ar("إِزَّيَّك يا صاحبي؟") == "ازيك يا صاحبي"
+    assert normalize_ar("- يا هلا <hesitation> كيف") == "يا هلا كيف"
     r = error_rates("كيف حالك اليوم", "كيف حالك")
     assert r["wer"] == 1 / 3 and not r["babble"]
 

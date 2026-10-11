@@ -2,8 +2,9 @@
 
     python -m arabic_voxcpm.eval.score /workspace/data/arabic/eval/runs/<run> [...]
 
-Per utterance: Whisper large-v3 transcript, CER / WER against the item text (Arabic-normalized), babble, UTMOS,
-DNSMOS, WavLM-SV similarity to the cloned voice, duration. Results are cached in <run>/scores.jsonl, so a rerun only
+Per utterance: Whisper large-v3 and Cohere Transcribe Arabic transcripts, CER / WER of each against the item text
+(Arabic-normalized; cer / wer = Whisper, cer_c / wer_c = Cohere), babble, UTMOS, DNSMOS, WavLM-SV similarity to the
+cloned voice, duration. Results are cached in <run>/scores.jsonl, so a rerun only
 scores new files. --gt scores the set's ground-truth recordings into <set>/gt_scores.jsonl: the ASR's own error on
 real speech of each dialect, the floor a model is compared against.
 """
@@ -20,6 +21,7 @@ from arabic_voxcpm.eval import metrics as M
 class Scorer:
     def __init__(self):
         self.asr = M.WhisperASR()
+        self.asr2 = M.CohereASR()
         self.dns = M.DNSMOS()
         self.utmos = M.UTMOS()
         self.emb = M.SpeakerEmbedder()
@@ -33,8 +35,10 @@ class Scorer:
     def __call__(self, path: str, text: str, voice_path: str | None) -> dict:
         audio = M.load16k(path)
         hyp = self.asr(path)
-        row = {"hyp": hyp, **M.error_rates(text, hyp), "utmos": self.utmos(audio), **self.dns(audio),
-               "duration_s": len(audio) / M.SR}
+        hyp2 = self.asr2(audio)
+        second = {f"{k}_c": v for k, v in M.error_rates(text, hyp2).items()}
+        row = {"hyp": hyp, "hyp_c": hyp2, **M.error_rates(text, hyp), **second, "utmos": self.utmos(audio),
+               **self.dns(audio), "duration_s": len(audio) / M.SR}
         if voice_path:
             row["voice_sim"] = float(self.emb(audio) @ self.voice_emb(voice_path))
         return row
