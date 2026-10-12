@@ -21,6 +21,8 @@ CORPUS_LABELS = {
     ("sada", "eg"): "egyptian", ("sada", "ye"): "yemeni", ("sada", "iq"): "iraqi", ("sada", "sa_unknown"): "saudi",
     ("sada", "shamali"): "saudi", ("sada", "janubi"): "saudi",
 }
+CORPUS_LABELS.update({("synth", d): d for d in DIALECTS})  # synth/filter.py writes canonical names
+
 ALIASES = {"emirati": "gulf", "qatari": "gulf", "khaliji": "gulf", "jordanian": "palestinian", "ab": "palestinian",
            "levantine": "palestinian"}
 

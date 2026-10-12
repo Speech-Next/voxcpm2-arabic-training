@@ -73,9 +73,11 @@ def main(args) -> None:
         print(json.dumps(rec), flush=True)
 
     model, tok = M.load(args.model, json.loads(args.lora) if args.lora else None)
-    rows = D.select_rows(heldout=None if args.heldout == "none" else args.heldout)
+    corpora = tuple(args.corpora.split(","))
+    rows = D.select_rows(corpora, heldout=None if args.heldout == "none" else args.heldout, quality=args.quality,
+                         max_cer=args.max_cer, min_dnsmos=args.min_dnsmos)
     train_rows, val_rows = split_rows(rows, args.val_frac, args.seed)
-    store = D.LatentStore()
+    store = D.LatentStore(corpora)
     train_ds = D.TrainSet(train_rows, store, tok, p_ref=args.p_ref, p_no_tag=args.p_no_tag, seed=args.seed)
     val_ds = D.TrainSet(val_rows[: args.val_max], store, tok, p_ref=args.p_ref, p_no_tag=0.0, seed=args.seed + 1)
     hours = sum(r["frames"] for r in train_ds.rows) / D.FPS / 3600
@@ -150,6 +152,10 @@ if __name__ == "__main__":
     ap.add_argument("--model", default="/workspace/models/VoxCPM2-Arabic-Dialects", help="base VoxCPM2 (adapters ignored)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--heldout", default="/workspace/data/arabic/eval/v1/heldout.json", help="'none' for smoke tests")
+    ap.add_argument("--corpora", default="lahgtna,sada", help="comma-separated; synth = synthetic speech (synth/)")
+    ap.add_argument("--quality", help="data/quality.py scores: real clips kept only if scored and passing")
+    ap.add_argument("--max-cer", type=float, default=0.10)
+    ap.add_argument("--min-dnsmos", type=float, default=3.0)
     ap.add_argument("--lora", help="JSON overrides of model.LORA_DEFAULT, e.g. '{\"r\": 128, \"alpha\": 128}'")
     ap.add_argument("--steps", type=int, default=20000)
     ap.add_argument("--budget", type=int, default=12000, help="padded positions per batch")

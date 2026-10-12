@@ -126,11 +126,12 @@ class DNSMOS:
 
     INPUT_LENGTH = 9.01
 
-    def __init__(self):
+    def __init__(self, threads: int = 2):
         import onnxruntime as ort
 
         opts = ort.SessionOptions()
-        opts.intra_op_num_threads = 2
+        opts.intra_op_num_threads = threads
+        opts.inter_op_num_threads = 1
         self.p835 = ort.InferenceSession(f"{DNSMOS_DIR}/sig_bak_ovr.onnx", opts, providers=["CPUExecutionProvider"])
         self.p808 = ort.InferenceSession(f"{DNSMOS_DIR}/model_v8.onnx", opts, providers=["CPUExecutionProvider"])
 

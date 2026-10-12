@@ -26,10 +26,22 @@ FPS = 25  # latent frames per second
 _DIGIT = re.compile(r"[0-9\u0660-\u0669\u06f0-\u06f9]")
 
 
-def select_rows(corpora=manifest.CORPORA, heldout: str | None = None, min_s: float = 1.0, max_s: float = 20.0) -> list[dict]:
-    """Training rows: a known dialect, 1-20 s, plausible speaking rate, no digits, nothing of the evaluation set."""
+def select_rows(corpora=manifest.CORPORA, heldout: str | None = None, min_s: float = 1.0, max_s: float = 20.0,
+                quality: str | None = None, max_cer: float = 0.10, min_dnsmos: float = 3.0) -> list[dict]:
+    """Training rows: a known dialect, 1-20 s, plausible speaking rate, no digits, nothing of the evaluation set.
+
+    quality: data/quality.py's scores; a real clip is kept only if it was scored (the scored candidates are already
+    capped per speaker and dialect) with Cohere CER <= max_cer and DNSMOS >= min_dnsmos. Synthetic clips were
+    filtered when made (synth/filter.py)."""
     held = json.load(open(heldout, encoding="utf-8")) if heldout else {"speakers": [], "uids": [], "texts": []}
     spk, uids, texts = set(held["speakers"]), set(held["uids"]), set(held["texts"])
+    good = None
+    if quality:
+        good = set()
+        for line in open(quality, encoding="utf-8"):
+            q = json.loads(line)
+            if q["cer"] <= max_cer and q["dnsmos_ovrl"] >= min_dnsmos:
+                good.add(q["uid"])
     out = []
     for c in corpora:
         for r in manifest.rows(c):
@@ -37,6 +49,8 @@ def select_rows(corpora=manifest.CORPORA, heldout: str | None = None, min_s: flo
             sec = r["frames"] / FPS
             if (d is None or r.get("split") == "test" or r["speaker"] in spk or r["uid"] in uids
                     or not (min_s <= sec <= max_s) or not r["text"]):
+                continue
+            if good is not None and c != "synth" and r["uid"] not in good:
                 continue
             if not 2.0 <= len(r["text"]) / sec <= 35.0 or normalize_ar(r["text"]) in texts or _DIGIT.search(r["text"]):
                 continue  # digits: the audio reads them in dialect, requests get them spelled out (text normalization)

@@ -97,7 +97,10 @@ def load(model_dir: str, lora: dict | None = None, device: str = "cuda"):
     from voxcpm.modules.minicpm4.model import MiniCPMDecoderLayer
 
     cfg = dict(LORA_DEFAULT, **(lora or {}))
-    model = VoxCPM2Model.from_local(model_dir, training=True, lora_config=LoRAConfig(**cfg))
+    # train_modules: only these top-level modules' LoRAs train (e.g. ["base_lm"]); the others stay at B = 0, a no-op
+    train_modules = cfg.get("train_modules")
+    model = VoxCPM2Model.from_local(model_dir, training=True,
+                                    lora_config=LoRAConfig(**{k: v for k, v in cfg.items() if k != "train_modules"}))
     tok = Tokenizer(model_dir)
     tag_ids = [tok.tag_id(d) for d in dialects.DIALECTS]
     emb = model.base_lm.embed_tokens
@@ -105,7 +108,8 @@ def load(model_dir: str, lora: dict | None = None, device: str = "cuda"):
     init = torch.stack([emb.weight[torch.tensor(tok(d))].float().mean(0) for d in dialects.DIALECTS])
     model.base_lm.embed_tokens = TaggedEmbedding(emb, tag_ids, init)
     for name, p in model.named_parameters():
-        p.requires_grad = "lora_" in name or "tag_embed" in name
+        p.requires_grad = ("lora_" in name and (not train_modules or name.split(".")[0] in train_modules)) \
+            or "tag_embed" in name
         if not p.requires_grad and p.dtype == torch.float32 and "audio_vae" not in name:
             p.data = p.data.to(torch.bfloat16)
     for m in model.modules():
