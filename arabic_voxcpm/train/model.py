@@ -137,18 +137,22 @@ def load_trainable(model, path: str) -> None:
     model.load_state_dict(state, strict=False)
 
 
-def export_merged(src_dir: str, ckpt: str, out_dir: str) -> None:
+def export_merged(src_dir: str, ckpt: str, out_dir: str, only: tuple[str, ...] | None = None,
+                  lora_scale: float = 1.0) -> None:
     """A plain VoxCPM2 model directory: every LoRA merged into its weight (W + s * B @ A), the tag rows written into
-    the embedding, the tags registered as special tokens (so "<reserved_N>" in text is one id), dialects.json."""
+    the embedding, the tags registered as special tokens (so "<reserved_N>" in text is one id), dialects.json.
+
+    Ablations: ``only`` merges just the LoRAs of these top-level modules (e.g. ("base_lm", "residual_lm")), and
+    ``lora_scale`` multiplies every merged LoRA."""
     from safetensors.torch import load_file, save_file
 
     state = load_file(os.path.join(src_dir, "model.safetensors"))
     train = load_file(os.path.join(ckpt, "trainable.safetensors"))
     cfg = json.load(open(os.path.join(ckpt, "train_state.json")))["lora"]
-    scale = cfg["alpha"] / cfg["r"]
+    scale = cfg["alpha"] / cfg["r"] * lora_scale
     merged = 0
     for name, a in train.items():
-        if not name.endswith(".lora_A"):
+        if not name.endswith(".lora_A") or (only is not None and name.split(".")[0] not in only):
             continue
         base = name[: -len(".lora_A")]
         b = train[base + ".lora_B"]
