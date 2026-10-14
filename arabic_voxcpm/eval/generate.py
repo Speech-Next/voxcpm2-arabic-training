@@ -69,7 +69,9 @@ async def run(args) -> None:
     check_voices(items, voices, args.mode)
     dit = None if args.dit == "none" else args.dit
     tts = await DialectTTS.load(args.model, dit, dit_cache=args.dit_cache, max_concurrency=args.concurrency,
-                                head_tokens=args.head_tokens, w8a8=args.precision == "int8")
+                                head_tokens=args.head_tokens, w8a8=args.precision == "int8",
+                                gpu_memory_utilization=getattr(args, "gpu_memory_utilization", 0.85),
+                                kv_blocks=getattr(args, "kv_blocks", 600))
     try:
         amap_path = adapter_map(args.adapter_map, args.set, tts.tags is not None)
         amap = json.load(open(amap_path, encoding="utf-8")) if amap_path else None
@@ -120,6 +122,8 @@ if __name__ == "__main__":
     ap.add_argument("--text-prefix", default="", help="e.g. '[{group}] ' for a dialect-tagged model")
     ap.add_argument("--concurrency", type=int, default=128)
     ap.add_argument("--max-patches", type=int, default=400)
+    ap.add_argument("--gpu-memory-utilization", type=float, default=0.85, help="lower it to share the GPU")
+    ap.add_argument("--kv-blocks", type=int, default=600)
     ap.add_argument("--no-normalize", dest="normalize", action="store_false",
                     help="the text as it is (digits included), without the library's text normalization")
     a = ap.parse_args()

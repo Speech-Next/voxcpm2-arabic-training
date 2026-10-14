@@ -7,7 +7,7 @@ TEACHER=$1; NAME=$2; MSE_ITERS=${3:-4000}; DMD_ITERS=${4:-1500}
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 ENGINE=${ENGINE:-/workspace/nanovllm-voxcpm-opt}
 ENGINE_PY=${ENGINE_PY:-/workspace/ttfa-bench/envs/nanovllm-opt/bin/python}
-PY=/venv/main/bin/python
+PY=${PY:-/venv/main/bin/python}
 SET=/workspace/data/arabic/eval/v1
 NUMSET=/workspace/data/arabic/eval/numbers_v1
 EVAL=/workspace/data/arabic/eval/runs
