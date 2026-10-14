@@ -26,7 +26,9 @@
 #
 # Environment (defaults): ENGINE (inference library), ENGINE_PY, TRAIN_PY (training: torch + voxcpm), EVAL_PY (scoring:
 # faster-whisper, transformers, onnxruntime, jiwer, librosa), MODEL (the base VoxCPM2 Arabic model), REF_AUG_DIR.
-# Memory: training peaks at ~13.3 GB as teacher-v2 (the augmentation runs before the forward, ~2 GB, freed for it);
+# Memory: budget 6000 x accum 2 = teacher-v2's 12000 positions per optimizer step at about half the peak, capped at
+# 0.62 of the GPU, so the #12 LocDiT student (~7 GB) trains next to it (12000 x 1 reserved 20 GB and OOM'd beside it).
+# Before: training peaks at ~13.3 GB as teacher-v2 (the augmentation runs before the forward, ~2 GB, freed for it);
 # --max-mem-gb 14 logs a warning above 14 GB. A LocDiT student may train on the same 24 GB GPU.
 set -euo pipefail
 NAME=teacher-v3
@@ -91,7 +93,8 @@ else
     --model "$MODEL" --out "$RUN" --steps "$STEPS" --heldout "$SET/heldout.json" --corpora "$CORPORA" \
     --quality "$QUALITY" --lora '{"train_modules": ["base_lm"], "enable_dit": false, "enable_proj": false}' \
     --val-every 500 --save-every 500 --corpus-weights "$WEIGHTS" "${AUG_ARGS[@]}" \
-    --max-mem-gb 14 --gpu-fraction "${GPU_FRACTION:-0.68}" --min-train-hours 130 "${RESUME[@]}"
+    --budget "${BUDGET:-6000}" --accum "${ACCUM:-2}" --max-mem-gb 14 --gpu-fraction "${GPU_FRACTION:-0.62}" \
+    --min-train-hours 130 "${RESUME[@]}"
 fi
 
 for ck in best last; do
