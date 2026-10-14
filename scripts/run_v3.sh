@@ -38,7 +38,8 @@ ENGINE=${ENGINE:-/workspace/voxcpm2-arabic-dialects-turbo}
 ENGINE_PY=${ENGINE_PY:-$ENGINE/.venv/bin/python}
 TRAIN_PY=${TRAIN_PY:-/workspace/envs/train/bin/python}
 [ -x "$TRAIN_PY" ] || TRAIN_PY=$ENGINE_PY
-EVAL_PY=${EVAL_PY:-$TRAIN_PY}
+EVAL_PY=${EVAL_PY:-/workspace/envs/eval/bin/python}
+[ -x "$EVAL_PY" ] || EVAL_PY=$TRAIN_PY
 snapshot() { "$TRAIN_PY" -c "from huggingface_hub import snapshot_download as s; print(s('$1', local_files_only=True))" 2>/dev/null; }
 MODEL=${MODEL:-$(snapshot VoxCPM-Kernel/VoxCPM2-Arabic-Dialects)}
 TEACHER_V2=${TEACHER_V2:-$(snapshot VoxCPM-Kernel/VoxCPM2-Arabic-Teacher-v2 || true)}
@@ -58,7 +59,8 @@ py() { local p=$1; shift; (cd "$REPO" && PYTHONPATH="$REPO" "$p" "$@"); }
 evalrun() {  # name model [run.py args]: generate (skipped when done) -> score (-> report)
   local name=$1 model=$2; shift 2
   py "$EVAL_PY" -m arabic_voxcpm.eval.run --engine-python "$ENGINE_PY" --engine-path "$ENGINE" \
-    --name "$name" --model "$model" --set "$SET" --dit none --mode ref "$@"
+    --name "$name" --model "$model" --set "$SET" --dit none --mode ref \
+    --gpu-memory-utilization "${EVAL_GPU_UTIL:-0.45}" --kv-blocks "${EVAL_KV_BLOCKS:-256}" "$@"  # shares the GPU
 }
 
 step "$NAME: model $MODEL, train python $TRAIN_PY, eval python $EVAL_PY, engine $ENGINE"
