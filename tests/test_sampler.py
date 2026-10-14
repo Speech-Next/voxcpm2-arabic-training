@@ -8,7 +8,7 @@ import torch
 
 from arabic_voxcpm.distill import sampler
 
-ENGINE = "/workspace/nanovllm-voxcpm-opt"
+ENGINE = os.environ.get("ENGINE", "/workspace/voxcpm2-arabic-dialects-turbo")
 
 
 class Toy(torch.nn.Module):
