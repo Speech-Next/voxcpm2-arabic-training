@@ -14,13 +14,11 @@ MODEL=/workspace/models/VoxCPM2-Arabic-Dialects
 LOG=/workspace/data/arabic/logs/$NAME.log
 mkdir -p "$EVAL" "$(dirname "$LOG")"
 exec >> "$LOG" 2>&1
-set -a; source /workspace/.env; set +a
+if [ -f /workspace/.env ]; then set -a; . /workspace/.env; set +a; fi
 step() { echo "=== $(date +%F\ %T) $*"; }
-gen() {  # out model [generate args]
-  local out=$1 model=$2; shift 2
-  [ -f "$out/run.json" ] && return 0
-  (cd "$REPO" && PYTHONPATH="$REPO:$ENGINE" "$ENGINE_PY" -m arabic_voxcpm.eval.generate --set "$SET" --out "$out" \
-     --model "$model" --dit none --mode ref "$@")
+evalrun() {  # generate (skipped when done) -> score, eval/run.py; [run.py / generate.py args]
+  (cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.run --engine-python "$ENGINE_PY" --engine-path "$ENGINE" \
+     --set "$SET" --dit none --mode ref --no-report "$@")
 }
 
 step "wait for the corpora"
@@ -31,8 +29,7 @@ step "evaluation set"
 [ -f "$SET/items.jsonl" ] || (cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.build --out "$SET")
 
 step "baseline: current adapters, original LocDiT"
-gen "$EVAL/base-adapters" "$MODEL"
-(cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.score "$EVAL/base-adapters" --gt "$SET")
+evalrun --name "$EVAL/base-adapters" --model "$MODEL"  # and the set's ground truth
 
 step "train $NAME ($STEPS steps)"
 (cd "$REPO" && PYTHONPATH="$REPO" PYTORCH_ALLOC_CONF=expandable_segments:True $PY -m arabic_voxcpm.train.train \
@@ -44,8 +41,7 @@ for ck in best last; do
   [ -f "$OUT/dialects.json" ] || (cd "$REPO" && PYTHONPATH="$REPO" $PY -c "
 from arabic_voxcpm.train.model import export_merged
 export_merged('$MODEL', '$RUN/$ck', '$OUT')")
-  gen "$EVAL/$NAME-$ck" "$OUT" --adapter-map "$SET/dialect_map.json"
-  (cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.score "$EVAL/$NAME-$ck")
+  evalrun --name "$EVAL/$NAME-$ck" --model "$OUT"  # tagged: the set's dialect_map.json
 done
 (cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.report --base "$EVAL/base-adapters" \
    "$EVAL/$NAME-best" "$EVAL/$NAME-last" --md "$RUN/report.md")

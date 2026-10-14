@@ -13,8 +13,9 @@ EVAL=/workspace/data/arabic/eval/runs
 RUN=/workspace/runs/$NAME
 MODEL=/workspace/models/VoxCPM2-Arabic-Dialects
 LOG=/workspace/data/arabic/logs/$NAME-ablate.log
+mkdir -p "$(dirname "$LOG")"
 exec >> "$LOG" 2>&1
-set -a; source /workspace/.env; set +a
+if [ -f /workspace/.env ]; then set -a; . /workspace/.env; set +a; fi
 step() { echo "=== $(date +%F\ %T) $*"; }
 RUNS=()
 for v in "$@"; do
@@ -26,9 +27,8 @@ for v in "$@"; do
 from arabic_voxcpm.train.model import export_merged
 export_merged('$MODEL', '$RUN/$CK', '$OUT', only=$ONLY, lora_scale=$scale)")
   E=$EVAL/$NAME-$CK-$label
-  [ -f "$E/run.json" ] || (cd "$REPO" && PYTHONPATH="$REPO:$ENGINE" "$ENGINE_PY" -m arabic_voxcpm.eval.generate --set "$SET" \
-     --out "$E" --model "$OUT" --dit none --mode ref --adapter-map "$SET/dialect_map.json")
-  (cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.score "$E")
+  (cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.run --engine-python "$ENGINE_PY" --engine-path "$ENGINE" \
+     --name "$E" --model "$OUT" --set "$SET" --dit none --mode ref --no-report)  # generate (once) -> score
   RUNS+=("$E")
 done
 (cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.report --base "$EVAL/base-adapters" "$EVAL/$NAME-$CK" "${RUNS[@]}" \

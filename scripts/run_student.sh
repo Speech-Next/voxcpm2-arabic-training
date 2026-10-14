@@ -16,15 +16,13 @@ SD=/workspace/runs/$NAME
 LOG=/workspace/data/arabic/logs/$NAME.log
 mkdir -p "$SD" "$(dirname "$LOG")"
 exec >> "$LOG" 2>&1
-set -a; source /workspace/.env; set +a
+if [ -f /workspace/.env ]; then set -a; . /workspace/.env; set +a; fi
 step() { echo "=== $(date +%F\ %T) $*"; }
-gen() {  # out model set [generate args]
+evalrun() {  # out model set [run.py / generate.py args]: generate (skipped when done) -> score, eval/run.py
   local out=$1 model=$2 set=$3; shift 3
-  [ -f "$out/run.json" ] && return 0
-  (cd "$REPO" && PYTHONPATH="$REPO:$ENGINE" "$ENGINE_PY" -m arabic_voxcpm.eval.generate --set "$set" --out "$out" \
-     --model "$model" --mode ref --adapter-map "$SET/dialect_map.json" "$@")
+  (cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.run --engine-python "$ENGINE_PY" --engine-path "$ENGINE" \
+     --name "$out" --model "$model" --set "$set" --mode ref --no-report "$@")
 }
-score() { (cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.score "$@"); }
 report() { (cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.report "$@"); }
 
 step "wait for the teacher pipeline ($TEACHER)"
@@ -43,9 +41,8 @@ echo "teacher: $TM"
 
 step "numbers (#4): the teacher with and without text normalization"
 [ -f "$NUMSET/items.jsonl" ] || (cd "$REPO" && PYTHONPATH="$REPO" $PY -m arabic_voxcpm.eval.numbers --base "$SET" --out "$NUMSET")
-gen "$EVAL/numbers-$TEACHER-raw" "$TM" "$NUMSET" --dit none --no-normalize
-gen "$EVAL/numbers-$TEACHER-norm" "$TM" "$NUMSET" --dit none
-score "$EVAL/numbers-$TEACHER-raw" "$EVAL/numbers-$TEACHER-norm"
+evalrun "$EVAL/numbers-$TEACHER-raw" "$TM" "$NUMSET" --dit none --no-normalize
+evalrun "$EVAL/numbers-$TEACHER-norm" "$TM" "$NUMSET" --dit none
 report --base "$EVAL/numbers-$TEACHER-raw" "$EVAL/numbers-$TEACHER-norm" --md "$SD/numbers.md"
 
 step "teacher data (#6)"
@@ -65,10 +62,9 @@ step "student: dmd ($DMD_ITERS iterations)"
    --out "$SD" --stage dmd --init "$SD/mse-best.pt" --iters "$DMD_ITERS") && touch "$SD/dmd-done"; }
 
 step "evaluate the students (and the English-distilled LocDiT) on the teacher"
-gen "$EVAL/$NAME-mse" "$TM" "$SET" --dit "$SD/mse-best.pt"
-gen "$EVAL/$NAME-dmd" "$TM" "$SET" --dit "$SD/dmd-last.pt"
-gen "$EVAL/$TEACHER-$CK-olddit" "$TM" "$SET" --dit "kadirnar/VoxCPM2-Turbo-distilled-DiT:student_k2_dmd.pt"
-score "$EVAL/$NAME-mse" "$EVAL/$NAME-dmd" "$EVAL/$TEACHER-$CK-olddit"
+evalrun "$EVAL/$NAME-mse" "$TM" "$SET" --dit "$SD/mse-best.pt"
+evalrun "$EVAL/$NAME-dmd" "$TM" "$SET" --dit "$SD/dmd-last.pt"
+evalrun "$EVAL/$TEACHER-$CK-olddit" "$TM" "$SET" --dit "kadirnar/VoxCPM2-Turbo-distilled-DiT:student_k2_dmd.pt"
 report --base "$EVAL/$TEACHER-$CK" "$EVAL/$NAME-mse" "$EVAL/$NAME-dmd" "$EVAL/$TEACHER-$CK-olddit" --md "$SD/vs-teacher.md"
 report --base "$EVAL/base-adapters" "$EVAL/$NAME-mse" "$EVAL/$NAME-dmd" "$EVAL/$TEACHER-$CK-olddit" --md "$SD/vs-base.md"
 step "done"

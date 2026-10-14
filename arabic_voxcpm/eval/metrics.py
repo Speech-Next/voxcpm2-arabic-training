@@ -121,6 +121,20 @@ class DialectID:
         return {"adi_label": label, "adi_ok": float(label == want), "adi_p": float(p[self.labels.index(want)])}
 
 
+MIN_AUDIO_S = 0.1  # shorter (an empty generation) is not scored by the models: score.py marks it "empty"
+
+
+def repeat_to(audio: np.ndarray, n: int) -> np.ndarray:
+    """audio doubled until it has at least n samples (DNSMOS's fixed window; doubling, not tiling to n, as the rows
+    scored before). Empty audio raises: doubling it never ends."""
+    if len(audio) == 0:
+        raise ValueError("empty audio")
+    k = 1
+    while len(audio) * k < n:
+        k *= 2
+    return np.tile(audio, k)
+
+
 class DNSMOS:
     """Microsoft DNSMOS (dnsmos_local.py logic), non-personalized P.835 + P.808."""
 
@@ -151,8 +165,7 @@ class DNSMOS:
 
     def __call__(self, audio: np.ndarray) -> dict:
         n = int(self.INPUT_LENGTH * SR)
-        while len(audio) < n:
-            audio = np.append(audio, audio)
+        audio = repeat_to(audio, n)
         rows = []
         for i in range(int(np.floor(len(audio) / SR) - self.INPUT_LENGTH) + 1):
             seg = audio[int(i * SR) : int((i + self.INPUT_LENGTH) * SR)]
@@ -195,5 +208,8 @@ class SpeakerEmbedder:
 
 def load16k(path: str) -> np.ndarray:
     import librosa
+    import soundfile as sf
 
+    if sf.info(path).frames == 0:  # an empty generation (the resampler rejects empty input)
+        return np.zeros(0, dtype=np.float32)
     return librosa.load(path, sr=SR)[0]

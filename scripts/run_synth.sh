@@ -10,8 +10,9 @@ ENGINE_PY=${ENGINE_PY:-/workspace/ttfa-bench/envs/nanovllm-opt/bin/python}
 PY=/venv/main/bin/python
 SYN=/workspace/data/arabic/synth
 LOG=/workspace/data/arabic/logs/synth.log
+mkdir -p "$(dirname "$LOG")"
 exec >> "$LOG" 2>&1
-set -a; source /workspace/.env; set +a
+if [ -f /workspace/.env ]; then set -a; . /workspace/.env; set +a; fi
 step() { echo "=== $(date +%F\ %T) $*"; }
 
 split() {  # set -> chunk sets <set>-<k> (items split, same voices)

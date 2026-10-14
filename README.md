@@ -27,7 +27,7 @@ Older names stay usable as aliases: emirati / qatari → gulf, jordanian → pal
 | package | what | issue |
 |---|---|---|
 | `arabic_voxcpm.data` | corpora → AudioVAE latent shards + manifests (`lahgtna`, `sada`), one source shard at a time | #3 |
-| `arabic_voxcpm.eval` | held-out evaluation set, generation through the inference library, scoring, paired reports | #2 |
+| `arabic_voxcpm.eval` | held-out evaluation sets, generation (library, dq_engine, Habibi), scoring, paired reports, blind A/B pages; `eval.run`: all in one command | #2 |
 | `arabic_voxcpm.train` | teacher training (tags, packing, dataset, model, forward, loop), merged export | #5 |
 | `scripts/run_teacher.sh` | the whole teacher pipeline, unattended | |
 
@@ -47,24 +47,73 @@ python -m arabic_voxcpm.data.sada          # -> /workspace/data/arabic/sada/...
 
 ## Evaluation
 
-The set is held out from training: speakers, clip ids and texts are listed in `heldout.json`. It has 30 texts per
-group (17 dialect groups), and reference voices come from held-out speakers.
+The sets are held out from training: speakers, clip ids and texts are listed in their `heldout.json`.
 
-Metrics:
-- Whisper large-v3 CER / WER, after Arabic normalization;
+| set | texts per group | items | voices |
+|---|---|---:|---:|
+| `v1` | 30 (17 dialect groups) | 510 | 26 held-out speakers |
+| `v2` | v1's 30 + 10 unseen: 40, except iq and ma (30) | 660 | v1's |
+
+v2 keeps v1's items, ids and voices. Its new texts come from clips no training run could use: other clips of the
+held-out lahgtna speakers, other SADA test-split clips, and for `sa` SADA test clips of Saudi speakers. A text that
+any trainable or synthetic clip also has is left out. `iq` and `ma` have no such source: their lahgtna speakers are
+in training. `v2/heldout.json` is v1's plus the new clips, so future training should exclude it.
+
+Cloning modes (`--mode`): `ref` (timbre of the reference clip), `prompt_ref` (also its transcript, from
+`voices.json`), `none` (no cloning; no speaker similarity). A run has one mode, recorded in `run.json`, and reports
+compare it with a baseline of the same mode and set.
+
+Metrics, per utterance:
+- Whisper large-v3 and Cohere CER / WER after Arabic normalization, and the per-clip best of the two;
 - UTMOS and DNSMOS;
 - WavLM-SV similarity to the cloned voice;
-- the ASR's error on the real recordings, the floor any model is compared against.
+- dialect region (ADI-5);
+- stops: duration ratio (generated / expected at the group's real speaking rate), late stop (> 1.5),
+  runaway (> 2 or `max_patches` reached), early stop (< 0.5). An empty generation counts as a full ASR error;
+- per set, the ASR's error on the real recordings: the floor any model is compared against.
 
-Reports compare per group, with paired bootstrap 95 % intervals against a baseline run.
+Reports are per group, with paired bootstrap 95 % intervals against the baselines (2 seeds by default).
+
+One command generates, scores and reports a configuration. It runs in the scoring environment; generation runs in
+the engine's environment (`ENGINE_PY`, `ENGINE`):
+
+```bash
+python -m arabic_voxcpm.eval.run --name <run> --model <dir | hf id> [--dit none | <ckpt>] [--dit-cache light] \
+    [--precision bf16 | int8] [--mode ref | prompt_ref | none] [--set v1 | v2] [--baseline base-adapters ...] \
+    [--seeds 2000 2001] [--engine dq] [generate.py options, e.g. --head-tokens 8]
+# -> /workspace/data/arabic/eval/runs/<run>/{wav/,run.json,scores.jsonl,report.md,report.json}
+```
+
+- Steps that are already done are skipped. A run directory that holds another configuration is refused.
+- A baseline name resolves to `<name>-<set>-<mode>`, `<name>-<mode>`, `<name>-<set>` or `<name>`, whichever matches
+  the run's set and mode. Name baseline runs that way, for example `base-adapters-v2-prompt_ref`.
+- Adapters: a tagged model uses the set's `dialect_map.json`, the base model each item's adapter. A group with no
+  adapter uses the base model. An adapter the model does not have is an error.
+- `--engine dq` generates with the base inference (dq_engine, `generate_dq.py`, `DQ_PY` / `DQ_ENGINE_DIR`). Its
+  2.0.4 build has no seeded noise, so each seed is a replicate.
+
+The steps on their own:
 
 ```bash
 python -m arabic_voxcpm.eval.build --out /workspace/data/arabic/eval/v1
-PYTHONPATH=.:<inference repo> <inference python> -m arabic_voxcpm.eval.generate --out runs/<name> --model <model dir> \
-    [--adapter-map /workspace/data/arabic/eval/v1/dialect_map.json]      # tagged models
-python -m arabic_voxcpm.eval.score runs/<name> [--gt /workspace/data/arabic/eval/v1]
-python -m arabic_voxcpm.eval.report --base runs/<baseline> runs/<name> --md report.md
+python -m arabic_voxcpm.eval.build --extend v1 --out /workspace/data/arabic/eval/v2 [--dry-run]   # counts per group
+PYTHONPATH=.:<inference repo> <inference python> -m arabic_voxcpm.eval.generate --set v2 --out runs/<name> \
+    --model <model> --mode ref
+python -m arabic_voxcpm.eval.score runs/<name> [--gt /workspace/data/arabic/eval/v2]
+python -m arabic_voxcpm.eval.score --fill-only runs/<name>          # add newer metrics to old rows (the stops: no model)
+python -m arabic_voxcpm.eval.report --base runs/<baseline> [--base runs/<baseline-none>] runs/<name> --md r.md --json r.json
 ```
+
+Blind listening test for native speakers:
+
+```bash
+python -m arabic_voxcpm.eval.listen --a runs/<A> --b runs/<B> --out ab/ [--groups eg najdi] [--n-per-group 10] [--seed 0]
+# share ab/page/ (index.html + audio/; no external resources). Keep ab/key.json and ab/items.csv to yourself.
+python -m arabic_voxcpm.eval.listen --score answers-*.csv --key ab/key.json   # win rates per group, Wilson 95 %
+```
+
+The page shows the Arabic text right to left, with players A and B. For "more natural" and "more like the dialect"
+the listener picks A, B or same. Answers are kept in the browser and downloaded as CSV.
 
 Generation runs in bf16 by default. A new model's SmoothQuant statistics are not calibrated, so int8 would measure the
 calibration, not the model.

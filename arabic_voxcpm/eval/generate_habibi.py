@@ -18,6 +18,8 @@ import json
 import os
 import time
 
+from arabic_voxcpm.eval import common
+
 # group -> Habibi dialect id (UNK: inferred from the prompt; Habibi has no Yemeni or Bahraini id)
 DIALECT = {"msa": "MSA", "najdi": "SAU", "hejazi": "SAU", "sa": "SAU", "khaliji": "UAE", "bh": "UAE", "iq": "IRQ",
            "eg": "EGY", "dz": "ALG", "ma": "MAR", "tn": "TUN", "ly": "LBY", "sd": "SDN", "lb": "LEV", "sy": "LEV",
@@ -69,7 +71,6 @@ class Habibi:
 
 def main(args) -> None:
     import numpy as np
-    import soundfile as sf
 
     items = [json.loads(line) for line in open(os.path.join(args.set, "items.jsonl"), encoding="utf-8")]
     voices = {v["id"]: v for v in json.load(open(os.path.join(args.set, "voices.json"), encoding="utf-8"))}
@@ -83,13 +84,12 @@ def main(args) -> None:
     for n, it in enumerate(order[: args.limit or None]):
         v = voices[it["voice"]]
         for seed in args.seeds:
-            path = os.path.join(args.out, "wav", f"{it['id']}_s{seed}.wav")
+            path = os.path.join(args.out, "wav", common.wav_name(it["id"], seed))
             if os.path.exists(path):
                 continue
             wave, sr, name = tts(it["text"], os.path.join(args.set, v["audio"]), v["text"], it["group"], specialized, seed)
             used[it["group"]] = name
-            sf.write(path + ".tmp.wav", np.asarray(wave, dtype=np.float32), sr)
-            os.replace(path + ".tmp.wav", path)
+            common.write_wav(path, np.asarray(wave, dtype=np.float32), sr)
         if n % 50 == 0:
             print(f"{n}/{len(order)} items, {time.time() - t0:.0f} s", flush=True)
     json.dump({"set": args.set, "out": args.out, "model": f"habibi-{args.model}", "models_by_group": used,
