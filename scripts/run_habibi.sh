@@ -4,8 +4,9 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 EVAL=/workspace/data/arabic/eval/runs
 LOG=/workspace/data/arabic/logs/habibi.log
+mkdir -p "$(dirname "$LOG")"
 exec >> "$LOG" 2>&1
-set -a; source /workspace/.env; set +a
+if [ -f /workspace/.env ]; then set -a; . /workspace/.env; set +a; fi
 step() { echo "=== $(date +%F\ %T) $*"; }
 for m in unified specialized; do
   step "generate habibi-$m"
