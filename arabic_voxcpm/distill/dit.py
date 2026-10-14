@@ -81,10 +81,11 @@ def load_vae(model_dir: str, device="cuda"):
 
 
 class TeacherData:
-    """Teacher rows in memory (stored dtype), batches of random rows. The last --val-shards shards are validation.
+    """Teacher rows in memory (stored dtype), batches of random rows. The last val_rows rows (at most half) are
+    validation: rows of the plan's last batches, which are shuffled over clips and adapters.
     ``adapters``: the adapter names (manifest.json), a row's ``adapter`` indexes them (-1: the base model)."""
 
-    def __init__(self, path: str, val_shards: int = 1, device="cuda"):
+    def __init__(self, path: str, val_rows: int = 20000, device="cuda"):
         mpath = os.path.join(path, "manifest.json")
         m = json.load(open(mpath)) if os.path.exists(mpath) else None
         shards = [os.path.join(path, s["file"]) for s in m["shards"]] if m else \
@@ -93,14 +94,13 @@ class TeacherData:
         self.adapters: list[str] = m["adapters"] if m else []
         parts = [torch.load(p, map_location="cpu", weights_only=True, mmap=True) for p in shards]
 
-        def cat(ps):
-            d = {k: torch.cat([p[k] for p in ps]) for k in KEYS if k in ps[0]}
-            d["adapter"] = torch.cat([p["adapter"].long() if "adapter" in p else torch.full((len(p["mu"]),), -1)
-                                      for p in ps])
-            return d
-
-        self.train = cat(parts[:-val_shards] if len(parts) > val_shards else parts)
-        self.val = cat(parts[-val_shards:])
+        d = {k: torch.cat([p[k] for p in parts]) for k in KEYS if k in parts[0]}
+        d["adapter"] = torch.cat([p["adapter"].long() if "adapter" in p else torch.full((len(p["mu"]),), -1)
+                                  for p in parts])
+        n = len(d["mu"])
+        v = min(val_rows, n // 2)
+        self.train = {k: x[: n - v] for k, x in d.items()}
+        self.val = {k: x[n - v :] for k, x in d.items()}
         self.device = device
 
     def name(self, a: int) -> str | None:
@@ -254,7 +254,7 @@ def validate(student, data, grid, bs: int, use, mean_mode: bool, vae=None, spec_
            "val_mse_teacher_by_adapter": {k: round(v[0] / v[1], 6) for k, v in sorted(by.items())}}
     if vae is not None and spec_rows:
         sp = m = 0.0
-        for name, b in data.val_parts(min(bs, 64), limit=spec_rows):
+        for name, b in data.val_parts(min(bs, 32), limit=spec_rows):
             use(name)
             with torch.autocast(torch.device(data.device).type, dtype=torch.bfloat16):
                 x = student_solve(student, b["z"], b["mu"], b["cond"], grid, mean_mode)
@@ -283,7 +283,7 @@ def main(args) -> None:
     grid = engine_grid(schedule)
     dev = torch.device(args.device)
     cuda = dev.type == "cuda"
-    data = TeacherData(args.data, args.val_shards, dev)
+    data = TeacherData(args.data, args.val_rows, dev)
     teacher = load_estimator(args.teacher, dev)
     for p in teacher.parameters():
         p.requires_grad = False
@@ -465,7 +465,7 @@ if __name__ == "__main__":
     ap.add_argument("--fake-steps", type=int, default=5)
     ap.add_argument("--fake-init", choices=["teacher", "student"], default="teacher")
     ap.add_argument("--cfg", type=float, default=2.0)
-    ap.add_argument("--val-shards", type=int, default=1)
+    ap.add_argument("--val-rows", type=int, default=20000, help="the last rows of the teacher data (at most half)")
     ap.add_argument("--val-every", type=int, default=500)
     ap.add_argument("--save-every", type=int, default=0, help="also keep <stage>-step<N>.pt every N steps")
     ap.add_argument("--log-every", type=int, default=50)

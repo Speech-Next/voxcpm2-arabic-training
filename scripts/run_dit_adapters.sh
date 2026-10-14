@@ -44,7 +44,7 @@ cer() {  # a run's mean CER over both ASRs (best of the two per clip), the #2 ch
   (cd "$REPO" && PYTHONPATH="$REPO" "$SCORE_PY" -c "
 from arabic_voxcpm.eval import report
 rows = report.load('$EVAL/$1').values()
-print(sum(r['cer_min'] for r in rows) / len(rows))")
+print(sum(r.get('cer_min', r.get('cer')) for r in rows) / len(rows))")
 }
 student() {  # out dir, stage, iterations, init, [dit.py args]
   local out=$1 stage=$2 iters=$3 init=$4; shift 4
@@ -75,11 +75,11 @@ echo "mse students on #2, mean CER: from current $C_CUR, from teacher $C_TEA -> 
 OUT=$SD/init-$BEST
 
 step "student spectral ($SPEC_ITERS iterations, from $OUT/mse-best.pt)"
-student "$OUT" spectral "$SPEC_ITERS" "$OUT/mse-best.pt" --lr 1e-5 --batch 256 --micro 64 ${SPEC_ARGS:-}
+student "$OUT" spectral "$SPEC_ITERS" "$OUT/mse-best.pt" --lr 1e-5 --batch 256 --micro 32 ${SPEC_ARGS:-}
 evalrun "$NAME-spectral" "$OUT/spectral-best.pt" --baseline base-adapters base-distilled
 
 step "student dmd ($DMD_ITERS iterations, from $OUT/spectral-best.pt)"
-student "$OUT" dmd "$DMD_ITERS" "$OUT/spectral-best.pt" --micro 128 ${DMD_ARGS:-}
+student "$OUT" dmd "$DMD_ITERS" "$OUT/spectral-best.pt" --batch 512 --micro 128 ${DMD_ARGS:-}
 evalrun "$NAME-dmd" "$OUT/dmd-best.pt" --baseline base-adapters base-distilled
 evalrun "$NAME-dmd-last" "$OUT/dmd-last.pt" --baseline base-adapters base-distilled
 

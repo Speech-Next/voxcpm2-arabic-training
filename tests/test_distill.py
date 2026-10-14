@@ -52,7 +52,7 @@ def args(tmp_path, stage, **kw):
     a = dict(teacher="toy", adapters=None, data=str(tmp_path / "tdata"), out=str(tmp_path / "dit"), stage=stage,
              init="teacher", schedule="1,0.7071,0", mean_mode=True, layers=0, iters=60, batch=32, micro=256,
              lr=1e-2, lr_fake=1e-2, warmup=5, real=0.0, spec_weight=1.0, mse_weight=1.0, spec_val_rows=64, reg=0.25,
-             fake_steps=2, fake_init="teacher", cfg=2.0, val_shards=1, val_every=30, save_every=0, log_every=10,
+             fake_steps=2, fake_init="teacher", cfg=2.0, val_rows=64, val_every=30, save_every=0, log_every=10,
              checkpointing=True, seed=0, device="cpu")
     a.update(kw)
     return argparse.Namespace(**a)
@@ -149,7 +149,7 @@ def test_adapter_stages(tmp_path, monkeypatch):
     adapter_teacher_data(str(tmp_path / "tdata"), base, dirs)
     monkeypatch.setattr(dit, "load_estimator", lambda path, device: copy.deepcopy(base))
     monkeypatch.setattr(dit, "load_vae", lambda path, device: ToyVAE())
-    common = dict(teacher=str(tmp_path / "model"), batch=48, micro=10)
+    common = dict(teacher=str(tmp_path / "model"), batch=48, micro=10, val_rows=128)
 
     dit.main(args(tmp_path, "mse", **common))
     log = list(map(json.loads, open(tmp_path / "dit" / "log-mse.jsonl")))
@@ -173,7 +173,7 @@ def test_adapter_stages(tmp_path, monkeypatch):
     student.load_state_dict({k[len(dit.PREFIX):]: v.float() for k, v in ck["state_dict"].items()})
     A.inject_dit(student, dirs)
     bank = A.AdapterBank(dirs, prefix=dit.PREFIX, dtype=torch.float32)
-    data = dit.TeacherData(str(tmp_path / "tdata"), 1, "cpu")
+    data = dit.TeacherData(str(tmp_path / "tdata"), 128, "cpu")
     grid = dit.engine_grid(ck["schedule"])
     right = dit.validate(student, data, grid, 64, lambda n: bank.use(student, n), True)
     wrong = dit.validate(student, data, grid, 64, lambda n: bank.use(student, None), True)
