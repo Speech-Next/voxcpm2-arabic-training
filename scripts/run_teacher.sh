@@ -6,7 +6,7 @@ NAME=$1; STEPS=$2; shift 2
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 ENGINE=${ENGINE:-/workspace/nanovllm-voxcpm-opt}      # inference library (DialectTTS)
 ENGINE_PY=${ENGINE_PY:-/workspace/ttfa-bench/envs/nanovllm-opt/bin/python}
-PY=/venv/main/bin/python
+PY=${PY:-/venv/main/bin/python}
 SET=/workspace/data/arabic/eval/v1
 EVAL=/workspace/data/arabic/eval/runs
 RUN=/workspace/runs/$NAME

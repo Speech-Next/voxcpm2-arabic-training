@@ -9,6 +9,6 @@ exec >> "$LOG" 2>&1
 if [ -f /workspace/.env ]; then set -a; . /workspace/.env; set +a; fi
 for bs in 32 16 8; do
   echo "=== $(date +%F\ %T) asr batch $bs"
-  (cd "$REPO" && PYTHONPATH="$REPO" /venv/main/bin/python -m arabic_voxcpm.data.quality --out "$OUT" --asr-batch $bs "$@") && { echo "=== $(date +%F\ %T) done"; exit 0; }
+  (cd "$REPO" && PYTHONPATH="$REPO" "${PY:-/venv/main/bin/python}" -m arabic_voxcpm.data.quality --out "$OUT" --asr-batch $bs "$@") && { echo "=== $(date +%F\ %T) done"; exit 0; }
 done
 echo "=== $(date +%F\ %T) failed"; exit 1

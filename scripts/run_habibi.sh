@@ -14,7 +14,7 @@ for m in unified specialized; do
      -m arabic_voxcpm.eval.generate_habibi --out "$EVAL/habibi-$m" --model $m)
 done
 step "score"
-(cd "$REPO" && PYTHONPATH="$REPO" /venv/main/bin/python -m arabic_voxcpm.eval.score "$EVAL/habibi-unified" "$EVAL/habibi-specialized")
-(cd "$REPO" && PYTHONPATH="$REPO" /venv/main/bin/python -m arabic_voxcpm.eval.report --base "$EVAL/base-adapters" \
+(cd "$REPO" && PYTHONPATH="$REPO" "${PY:-/venv/main/bin/python}" -m arabic_voxcpm.eval.score "$EVAL/habibi-unified" "$EVAL/habibi-specialized")
+(cd "$REPO" && PYTHONPATH="$REPO" "${PY:-/venv/main/bin/python}" -m arabic_voxcpm.eval.report --base "$EVAL/base-adapters" \
    "$EVAL/habibi-unified" "$EVAL/habibi-specialized" "$EVAL/teacher-v1-last-baselm" --md /workspace/runs/habibi-vs-base.md)
 step "done"
