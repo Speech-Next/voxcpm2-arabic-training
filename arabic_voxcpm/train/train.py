@@ -81,8 +81,10 @@ def main(args) -> None:
     train_ds = D.TrainSet(train_rows, store, tok, p_ref=args.p_ref, p_no_tag=args.p_no_tag, seed=args.seed)
     val_ds = D.TrainSet(val_rows[: args.val_max], store, tok, p_ref=args.p_ref, p_no_tag=0.0, seed=args.seed + 1)
     hours = sum(r["frames"] for r in train_ds.rows) / D.FPS / 3600
+    # TrainSet drops rows without latents (e.g. a selection wider than the restored latents: data/release.py)
+    no_latents = len(train_rows) + len(val_rows[: args.val_max]) - len(train_ds) - len(val_ds)
     emit({"event": "data", "train_clips": len(train_ds), "train_hours": round(hours, 1), "val_clips": len(val_ds),
-          "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad)})
+          "no_latents": no_latents, "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad)})
     sampler = D.TokenBudgetBatches(train_ds, args.budget, seed=args.seed)
     loader = torch.utils.data.DataLoader(train_ds, batch_sampler=sampler, collate_fn=pack.collate,
                                          num_workers=args.workers, pin_memory=True)
