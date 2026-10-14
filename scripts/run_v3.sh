@@ -91,7 +91,7 @@ else
     --model "$MODEL" --out "$RUN" --steps "$STEPS" --heldout "$SET/heldout.json" --corpora "$CORPORA" \
     --quality "$QUALITY" --lora '{"train_modules": ["base_lm"], "enable_dit": false, "enable_proj": false}' \
     --val-every 500 --save-every 500 --corpus-weights "$WEIGHTS" "${AUG_ARGS[@]}" \
-    --max-mem-gb 14 --min-train-hours 130 "${RESUME[@]}"
+    --max-mem-gb 14 --gpu-fraction "${GPU_FRACTION:-0.68}" --min-train-hours 130 "${RESUME[@]}"
 fi
 
 for ck in best last; do
