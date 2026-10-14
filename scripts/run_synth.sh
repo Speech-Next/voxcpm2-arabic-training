@@ -7,7 +7,7 @@ CHUNK=${1:-5000}
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 ENGINE=${ENGINE:-/workspace/nanovllm-voxcpm-opt}
 ENGINE_PY=${ENGINE_PY:-/workspace/ttfa-bench/envs/nanovllm-opt/bin/python}
-PY=/venv/main/bin/python
+PY=${PY:-/venv/main/bin/python}
 SYN=/workspace/data/arabic/synth
 LOG=/workspace/data/arabic/logs/synth.log
 mkdir -p "$(dirname "$LOG")"
