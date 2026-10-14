@@ -103,6 +103,8 @@ def main(args) -> None:
           "ref_aug": {"p": args.ref_aug, "mode": "precomputed" if variants else "step" if args.ref_aug > 0 else None,
                       "variants": len(variants),
                       "variant_clips": [sum(r["uid"] in v for r in train_ds.rows) for v in variants]}})
+    if args.gpu_fraction > 0:  # cached blocks are freed before the cap, so another job can share the GPU
+        torch.cuda.set_per_process_memory_fraction(args.gpu_fraction)
     if hours < args.min_train_hours:
         raise SystemExit(f"{hours:.1f} h of training data < --min-train-hours {args.min_train_hours}: latents missing?")
     augmenter = None
@@ -216,6 +218,8 @@ if __name__ == "__main__":
     ap.add_argument("--ref-aug-chunk", type=int, default=1250, help="latent frames per AudioVAE round-trip batch")
     ap.add_argument("--ref-aug-sr-cond", type=int, default=16000,
                     help="decoder bandwidth condition (16000: the encoder's band, least round-trip drift; 0: default)")
+    ap.add_argument("--gpu-fraction", type=float, default=0.0,
+                    help="cap this process's CUDA allocator at this fraction of the GPU (0: no cap)")
     ap.add_argument("--max-mem-gb", type=float, default=0.0, help="warn once when peak allocated memory exceeds it")
     ap.add_argument("--min-train-hours", type=float, default=0.0, help="refuse to train on less (incomplete latents)")
     ap.add_argument("--val-frac", type=float, default=0.004)
