@@ -8,7 +8,12 @@ The student is a LocDiT of the teacher's architecture (--layers: fewer decoder l
 conditional input only, x <- x - dt_j * u(x, mu, t_j, cond, dt_j), over a fixed grid (--schedule, default the
 current student's 1 -> 0.7071 -> 0) rounded to bf16 as the engine rounds it. Mean mode (default): the step size goes
 to the estimator's dt input. --init: ``current`` (the English student, VoxCPM-Kernel/VoxCPM2-Turbo-distilled-DiT
-student_k2_dmd.pt; it was trained with dt = 0), ``teacher`` (the teacher's LocDiT) or a checkpoint.
+student_k2_dmd.pt; it was trained with dt = 0), ``arabic`` (#12's student for the dialect adapters,
+VoxCPM-Kernel/VoxCPM2-Arabic-Dialects-Distilled-DiT student_k2_dmd.pt), ``teacher`` (the teacher's LocDiT) or a
+checkpoint.
+
+A tagged teacher (teacher_data.py --teacher <merged model>: no adapters, every row -1) trains the student on the
+teacher's own LocDiT alone; teacher-v3's LoRA is on base_lm only, so that LocDiT is base VoxCPM2's.
 
 Adapters: teacher data of an adapter teacher (teacher_data.py --teacher adapters) holds each row's adapter. A batch
 is split by adapter, and every part runs with that adapter's LocDiT LoRA (frozen, train.adapters) on the student, the
@@ -51,6 +56,8 @@ from arabic_voxcpm.distill import sampler
 
 PREFIX = "feat_decoder.estimator."
 CURRENT_STUDENT = "VoxCPM-Kernel/VoxCPM2-Turbo-distilled-DiT:student_k2_dmd.pt"
+ARABIC_STUDENT = "VoxCPM-Kernel/VoxCPM2-Arabic-Dialects-Distilled-DiT:student_k2_dmd.pt"
+INITS = {"current": CURRENT_STUDENT, "arabic": ARABIC_STUDENT, "teacher": None}
 KEYS = ("mu", "cond", "z", "x", "target")
 
 
@@ -299,7 +306,7 @@ def main(args) -> None:
         bank = A.AdapterBank(chosen, prefix=PREFIX, device=dev, dtype=torch.bfloat16 if cuda else torch.float32)
         emit({"event": "adapters", "adapters": data.adapters, "lora_layers": n_lora})
 
-    init = {"current": CURRENT_STUDENT, "teacher": None}.get(args.init, args.init)
+    init = INITS.get(args.init, args.init)
     init_ck = load_checkpoint(init) if init else {}
     layers = args.layers or int(init_ck.get("dit_layers") or 0)
     student = copy.deepcopy(teacher).float()
@@ -446,7 +453,8 @@ if __name__ == "__main__":
     ap.add_argument("--out", required=True)
     ap.add_argument("--stage", choices=["mse", "spectral", "dmd"], default="mse")
     ap.add_argument("--init", default="teacher",
-                    help="current (the English student), teacher (its LocDiT) or a student checkpoint")
+                    help="current (the English student), arabic (#12's student), teacher (its LocDiT) or a "
+                         "student checkpoint")
     ap.add_argument("--schedule", default="1,0.7071,0", help="the t grid, 1 -> 0 (K steps = points - 1)")
     ap.add_argument("--no-mean-mode", dest="mean_mode", action="store_false",
                     help="feed dt = 0 to the estimator (as the English student was trained)")

@@ -197,3 +197,60 @@ def test_adapter_stages(tmp_path, monkeypatch):
         assert len(steps) == 2 and all(math.isfinite(r["loss_dmd"]) and math.isfinite(r["loss_reg"]) for r in steps)
         assert all(("loss_fake" in r) == (fake_steps > 0) for r in steps)
         assert torch.load(os.path.join(out, "dmd-last.pt"), weights_only=True)["step"] == 20
+
+
+def tagged_teacher_data(out, teacher, batches=8, rows=32):
+    """teacher_data.py's layout from a tagged teacher (a merged model): a manifest without adapters, every row -1."""
+    plan = [(None, [(bi, 0)] * rows) for bi in range(batches)]
+
+    def run_batch(bi, adapter, samples):
+        assert adapter is None
+        g = torch.Generator().manual_seed(200 + bi)
+        n = len(samples)
+        z = torch.randn(n, 8, 4, generator=g).to(torch.bfloat16)
+        mu, cond = torch.randn(n, 8, generator=g), torch.randn(n, 8, 4, generator=g)
+        with torch.no_grad():
+            x = sampler.solve(teacher, z.float(), mu, cond, cfg_value=2.0, steps=10)
+        o = T.batch_rows(torch.ones(n, 1, dtype=torch.bool), samples,
+                         [{"ref": None, "ref_start": 0, "ref_frames": 0}] * n, [g for g, _ in samples], bi, -1, 0)
+        o.update(mu=mu.to(torch.bfloat16), cond=cond.to(torch.bfloat16), z=z, x=x.to(torch.bfloat16),
+                 target=x.to(torch.bfloat16))
+        return o
+
+    T.generate(plan, T.Writer(out, {"fingerprint": "toy", "adapters": []}, shard_rows=3 * rows), run_batch, 10**9)
+
+
+def test_tagged_teacher_stages(tmp_path, monkeypatch):
+    """teacher-v3's data (#7): no adapters, so no LoRA is injected anywhere; mse -> spectral -> dmd as for #12."""
+    torch.manual_seed(0)
+    base = Toy()
+    tagged_teacher_data(str(tmp_path / "tdata"), base)
+    data = dit.TeacherData(str(tmp_path / "tdata"), 64, "cpu")
+    assert data.adapters == [] and set(data.train["adapter"].tolist()) == {-1}
+    assert [name for name, _, _ in data.parts(data.batch(40), 16)] == [None, None, None]
+    monkeypatch.setattr(dit, "load_estimator", lambda path, device: copy.deepcopy(base))
+    monkeypatch.setattr(dit, "load_vae", lambda path, device: ToyVAE())
+    common = dict(teacher=str(tmp_path / "teacher-v3"), batch=48, micro=16)
+
+    dit.main(args(tmp_path, "mse", **common))
+    log = list(map(json.loads, open(tmp_path / "dit" / "log-mse.jsonl")))
+    assert not [r for r in log if r.get("event") == "adapters"]
+    val = [r for r in log if r.get("event") == "val"]
+    assert set(val[0]["val_mse_teacher_by_adapter"]) == {"base"}
+    assert val[-1]["val_mse_teacher"] < 0.8 * val[0]["val_mse_teacher"]
+    ck = torch.load(tmp_path / "dit" / "mse-best.pt", weights_only=True)
+    assert ck["adapters"] == [] and not any("lora" in k for k in ck["state_dict"])
+
+    dit.main(args(tmp_path, "spectral", init=str(tmp_path / "dit" / "mse-best.pt"), lr=1e-3, iters=20, val_every=10,
+                  **common))
+    assert os.path.exists(tmp_path / "dit" / "spectral-best.pt")
+    dit.main(args(tmp_path, "dmd", init=str(tmp_path / "dit" / "spectral-best.pt"), lr=1e-3, iters=20, val_every=10,
+                  **common))
+    log = list(map(json.loads, open(tmp_path / "dit" / "log-dmd.jsonl")))
+    assert [r for r in log if "loss_dmd" in r] and torch.load(tmp_path / "dit" / "dmd-last.pt",
+                                                                 weights_only=True)["step"] == 20
+
+
+def test_init_aliases():
+    assert dit.INITS["current"] == dit.CURRENT_STUDENT and dit.INITS["teacher"] is None
+    assert dit.INITS["arabic"] == "VoxCPM-Kernel/VoxCPM2-Arabic-Dialects-Distilled-DiT:student_k2_dmd.pt"
