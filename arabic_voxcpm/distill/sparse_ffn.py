@@ -75,7 +75,8 @@ def unpack_index(packed: torch.Tensor) -> torch.Tensor:
 
 @torch.no_grad()
 def sparsegpt_24(w: torch.Tensor, h: torch.Tensor, blocksize: int = 128, percdamp: float = 0.01):
-    """SparseGPT's 2:4 solve: (pruned weight fp32 [out, in], kept mask bool [out, in], estimated output error).
+    """SparseGPT's 2:4 solve: (pruned weight fp32 [out, in], kept mask bool [out, in], estimated output error relative
+    to the output's energy, sum over the calibration inputs of |W x|^2).
 
     w [out, in], h [in, in] = sum of x x^T over the calibration inputs. Columns are processed left to right in blocks;
     at every 4th column the 2 of the next 4 with the smallest w^2 / [H^-1]_jj^2 are pruned, and the pruning error is
@@ -83,6 +84,7 @@ def sparsegpt_24(w: torch.Tensor, h: torch.Tensor, blocksize: int = 128, percdam
     assert blocksize % 4 == 0
     w = w.detach().clone().float()
     h = h.detach().clone().float()
+    energy = float((w @ h * w).sum()) / 2  # |W x|^2 / 2, the losses' scale
     cols = w.shape[1]
     dead = torch.diag(h) == 0
     h[dead, dead] = 1
@@ -124,7 +126,7 @@ def sparsegpt_24(w: torch.Tensor, h: torch.Tensor, blocksize: int = 128, percdam
         w[:, i1:i2] = q1
         pruned[:, i1:i2] = m1
         w[:, i2:] -= err1 @ hinv[i1:i2, i2:]
-    return w, ~pruned, float(losses.sum())
+    return w, ~pruned, float(losses.sum()) / max(energy, 1e-30)
 
 
 class Sparse24Linear(nn.Module):
@@ -368,7 +370,9 @@ def prune(args) -> None:
     for li, layer in enumerate(lm.layers):
         mlp = layer.mlp
         path = os.path.join(args.out, "layers", f"layer-{li:02d}.safetensors")
-        if os.path.exists(path):
+        if li in args.dense_layers:  # kept dense (the engine runs such a layer with its dense kernels)
+            pass
+        elif os.path.exists(path):
             saved = load_file(path, device=str(dev))
             for n in FFN:
                 getattr(mlp, n).weight.data.copy_(saved[f"{n}.weight"])
@@ -394,13 +398,15 @@ def prune(args) -> None:
             os.replace(path + ".tmp", path)
             stats[str(li)] = info
             json.dump(stats, open(os.path.join(args.out, "prune.json"), "w"), indent=1)
-            print(f"layer {li}: SparseGPT error gate {info['gate_proj']:.3g} up {info['up_proj']:.3g} "
+            print(f"layer {li}: SparseGPT relative error gate {info['gate_proj']:.3g} up {info['up_proj']:.3g} "
                   f"down {info['down_proj']:.3g} ({time.time() - t0:.0f} s)", flush=True)
         hs = run_layer(layer)  # this layer pruned: the next one's inputs
     # the model directory: the source's files, the pruned weights, the masks
     state = load_file(os.path.join(args.model, "model.safetensors"))
     masks = {}
     for li in range(len(lm.layers)):
+        if li in args.dense_layers:
+            continue
         saved = load_file(os.path.join(args.out, "layers", f"layer-{li:02d}.safetensors"))
         for n in FFN:
             key = f"base_lm.layers.{li}.mlp.{n}.weight"
@@ -409,7 +415,7 @@ def prune(args) -> None:
             masks[key] = saved[f"{n}.mask"]
     write_model_dir(args.model, args.out, state, masks)
     json.dump({"source": os.path.realpath(args.model)}, open(os.path.join(args.out, "source.json"), "w"))
-    print(f"pruned {3 * len(lm.layers)} FFN weights -> {args.out}", flush=True)
+    print(f"pruned {len(masks)} FFN weights -> {args.out}", flush=True)
 
 
 def write_model_dir(src: str, out: str, state: dict, masks: dict | None, link: bool = True) -> None:
@@ -491,6 +497,8 @@ def sparsify(model, masks: dict) -> list[Sparse24Linear]:
         for n in FFN:
             lin = getattr(layer.mlp, n)
             key = f"base_lm.layers.{li}.mlp.{n}.weight"
+            if key not in masks:  # a layer kept dense: frozen
+                continue
             sp = Sparse24Linear(lin.weight, unpack_index(masks[key].to(lin.weight.device)))
             setattr(layer.mlp, n, sp)
             out.append(sp)
@@ -687,7 +695,7 @@ def export(args) -> None:
     masks = load_file(os.path.join(pruned, MASKS))
     if args.ckpt:
         vals = load_file(os.path.join(args.ckpt, "vals.safetensors"))
-        keys = [f"base_lm.layers.{li}.mlp.{n}.weight" for li in range(len(masks) // 3) for n in FFN]
+        keys = sorted(masks, key=lambda k: (int(k.split(".")[2]), FFN.index(k.split(".")[4])))  # sparsify's order
         assert len(vals) == len(keys), (len(vals), len(keys))
         for i, key in enumerate(keys):
             w = state[key]
@@ -713,6 +721,7 @@ def main() -> None:
     p.add_argument("--calib-batches", type=int, default=24)
     p.add_argument("--blocksize", type=int, default=128)
     p.add_argument("--percdamp", type=float, default=0.01)
+    p.add_argument("--dense-layers", type=int, nargs="*", default=[], help="base_lm layers whose FFN stays dense")
     r = sub.add_parser("record")
     add_data_args(r)
     r.add_argument("--out", required=True)
