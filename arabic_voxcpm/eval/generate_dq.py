@@ -1,7 +1,7 @@
-"""The evaluation set through the base inference (dq_engine, VoxCPM-Kernel/VoxCPM2-Serving-Engine-Patches): the baseline the library
-is measured against, on the same texts, voices and adapters as generate.py.
+"""The evaluation set through the base inference (dq_engine, VoxCPM-Kernel/VoxCPM2-Serving-Engine-Patches): the
+baseline the library is measured against, on the same texts, voices and adapters as generate.py.
 
-Runs in dq_engine's environment (stock nano-vllm-voxcpm 2.0.4 + ttfa-bench/dq_engine/compat-nanovllm-2.0.4.patch):
+Runs in dq_engine's environment (stock nano-vllm-voxcpm 2.0.4 + the repo's compat-nanovllm-2.0.4.patch):
 
     PYTHONPATH=.:<dir holding dq_engine/> <dq python> -m arabic_voxcpm.eval.generate_dq --out runs/base-dq [--mode ref]
 
