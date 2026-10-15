@@ -7,6 +7,11 @@ dialect, segment id): khaledalganem/sada2022, the same rows in the same order (c
 row). Kept: single-speaker segments of 1.5-20 s in a clean environment (--env adds others). Speaker = file +
 the corpus's per-file speaker label. The test split is kept as FLAC (eval_audio/) for the evaluation (#2).
 License: CC BY-NC-SA 4.0.
+
+    python -m arabic_voxcpm.data.sada --restore <uids or dataset manifest.jsonl> --splits validation train
+
+Latents only, as lahgtna.py --restore: the listed clips of the existing manifests, nothing else rewritten; only the
+audio files holding a listed clip without latents are downloaded (the others' row counts are read remotely).
 """
 
 from __future__ import annotations
@@ -51,8 +56,60 @@ def keep_row(m: dict, envs: tuple[str, ...]) -> bool:
             and 1.5 <= m["SegmentLength"] <= 20 and bool(artext.clean(m["GroundTruthText"] or "")))
 
 
+def restore(args) -> None:
+    from huggingface_hub import HfFileSystem
+
+    want = common.read_uids(args.restore)
+    envs = tuple(args.env)
+    raw = os.path.join(args.out, "raw")
+    fs, vae = HfFileSystem(), None
+    for split in args.splits:
+        files = audio_files(split)
+        todo = [(k, f, rows) for k, f in enumerate(files)
+                if (rows := common.to_restore(args.out, f"{split}-{k:05d}", want))]
+        hours = sum(r["frames"] for *_, rows in todo for r in rows) * avae.HOP / avae.SAMPLE_RATE / 3600
+        clips = sum(len(t[2]) for t in todo)
+        print(f"[{split}] {len(todo)} of {len(files)} files to restore: {clips} clips, {hours:.2f} h", flush=True)
+        if not todo:
+            continue
+        meta = metadata(split, raw)
+        sizes = [pq.ParquetFile(fs.open(f"datasets/{AUDIO_REPO}/{f}")).metadata.num_rows for f in files]
+        assert sum(sizes) == len(meta), f"{split}: {sum(sizes)} audio rows, {len(meta)} metadata rows"
+        offsets = [sum(sizes[:k]) for k in range(len(files))]
+        if vae is None:
+            avae.exact()
+            vae = avae.load_vae(args.model)
+        with cf.ThreadPoolExecutor(args.fetchers) as fetch, cf.ThreadPoolExecutor(args.workers) as pool:
+            get = lambda t: common.download(AUDIO_REPO, t[1], raw)  # noqa: E731
+            for (k, f, rows), path in common.ahead(fetch, get, todo, args.fetchers):
+                t0 = time.time()
+                name = f"{split}-{k:05d}"
+                pf = pq.ParquetFile(path)
+                assert pf.metadata.num_rows == sizes[k], f"{f}: {pf.metadata.num_rows} rows, {sizes[k]} read remotely"
+                table = pf.read(columns=["text", "audio"])
+                texts = table.column("text").to_pylist()
+                metas = meta[offsets[k] : offsets[k] + sizes[k]]
+                kept = [i for i, m in enumerate(metas) if keep_row(m, envs)]
+                pos = {metas[i]["SegmentID"]: i for i in kept}
+                assert len(pos) == len(kept), f"{f}: a segment id twice"
+                for r in rows:
+                    assert r["uid"] in pos, f"{f}: {r['uid']} is not a kept row of the source file"
+                    i = pos[r["uid"]]
+                    assert same_text(texts[i], metas[i]["GroundTruthText"]), f"{f}: audio and metadata rows disagree"
+                    assert artext.clean(metas[i]["GroundTruthText"]) == r["text"], f"{f} {r['uid']}: the text differs"
+                audio = table.column("audio")
+                waves = list(pool.map(decode, [audio[pos[r["uid"]]].as_py() for r in rows]))
+                del table, audio
+                stats = common.restore_shard(args.out, name, vae, rows, waves)
+                os.remove(path)
+                print(f"[{split} {k + 1}/{len(files)}] {stats['clips']} clips restored, {stats['hours']:.2f} h "
+                      f"in {time.time() - t0:.0f} s", flush=True)
+
+
 def main(args) -> None:
     common.out_dirs(args.out)
+    if args.restore:
+        return restore(args)
     raw = os.path.join(args.out, "raw")
     vae = avae.load_vae(args.model)
     envs = tuple(args.env)
@@ -107,4 +164,6 @@ if __name__ == "__main__":
     ap.add_argument("--splits", nargs="+", default=["test", "validation", "train"])
     ap.add_argument("--env", nargs="+", default=["Clean"], help="environments kept (Clean, Music, Noisy, Car)")
     ap.add_argument("--workers", type=int, default=32)
+    ap.add_argument("--restore", help="latents only, of these clips (uids, or a dataset manifest.jsonl)")
+    ap.add_argument("--fetchers", type=int, default=2, help="--restore: files downloading ahead")
     main(ap.parse_args())

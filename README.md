@@ -136,6 +136,14 @@ exports `best` and `last` as merged model directories, evaluates them and writes
 - 70 % clone a 3-10 s window of another clip of the same speaker (the `ref` layout).
 - 10 % drop the tag.
 
+**teacher-v3** (`scripts/run_v3.sh`, #5): teacher-v2's data and recipe (LoRA r 64 on `base_lm` only, 3000 steps) plus
+- `--corpus-weights sada=0.5,synth:hejazi=2,...`: expected draws per clip and epoch, by corpus or corpus:dialect, without
+  copies on disk; the `data` event logs the effective hours;
+- `--ref-aug 0.5`: half of the cloning samples get a degraded reference (noise at 5-25 dB SNR, synthetic reverberation
+  RT60 0.2-0.8 s, low-pass 3-7 kHz), the target stays clean. The AudioVAE decodes, degrades and re-encodes the
+  reference in the training step (~25 % of a step), or `python -m arabic_voxcpm.train.augment` precomputes degraded
+  variants once (`--ref-aug-dir`).
+
 **Equivalence checks:**
 - The sequence layouts match the upstream packer (`tests/test_pack.py`).
 - The training forward matches the upstream forward (`tests/test_forward.py`) but runs the LocDiT loss only where it

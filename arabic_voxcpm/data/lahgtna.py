@@ -6,6 +6,12 @@
 (~0.8 GB, ~1500 clips) is downloaded, decoded, resampled 24 -> 16 kHz (the corpus was 16 kHz before it was
 upsampled), encoded and deleted; the next one downloads meanwhile. The clips of the corpus's held-out evaluation
 (and their reference clips) are also kept as 16 kHz FLAC under eval_audio/. Finished shards are skipped.
+
+    python -m arabic_voxcpm.data.lahgtna --restore <uids or dataset manifest.jsonl>
+
+Latents only, for manifests restored from a backup without them: only the listed clips are decoded and encoded (TF32
+off, vae.exact) into latents/<shard>.pt, checked against their manifest rows (text, frames); only the shards holding a
+listed clip without latents are downloaded. Manifests and eval_audio/ are not rewritten. Resumable.
 """
 
 from __future__ import annotations
@@ -64,8 +70,44 @@ def rows_of(table, name: str) -> list[dict]:
     return out
 
 
+def restore(args) -> None:
+    want = common.read_uids(args.restore)
+    todo = []
+    for s in list_shards()[: args.limit or None]:
+        name = os.path.basename(s)[:-8]
+        rows = common.to_restore(args.out, name, want)
+        if rows:
+            todo.append((s, name, rows))
+    hours = sum(r["frames"] for _, _, rows in todo for r in rows) * avae.HOP / avae.SAMPLE_RATE / 3600
+    clips = sum(len(t[2]) for t in todo)
+    print(f"{len(want)} uids listed; {len(todo)} shards to restore: {clips} clips, {hours:.2f} h", flush=True)
+    if not todo:
+        return
+    avae.exact()
+    vae = avae.load_vae(args.model)
+    raw = os.path.join(args.out, "raw")
+    with cf.ThreadPoolExecutor(args.fetchers) as fetch, cf.ThreadPoolExecutor(args.workers) as pool:
+        get = lambda t: common.download(REPO, t[0], raw)  # noqa: E731
+        for k, ((s, name, rows), path) in enumerate(common.ahead(fetch, get, todo, args.fetchers)):
+            t0 = time.time()
+            table = pq.read_table(path, columns=["uid", "text", "audio"])
+            pos = {u: i for i, u in enumerate(table.column("uid").to_pylist())}
+            texts, audio = table.column("text"), table.column("audio")
+            for r in rows:
+                assert r["uid"] in pos, f"{s}: {r['uid']} is not in the source shard"
+                assert artext.clean(texts[pos[r["uid"]]].as_py()) == r["text"], f"{s} {r['uid']}: the text differs"
+            waves = list(pool.map(decode, [audio[pos[r["uid"]]].as_py() for r in rows]))
+            del table, texts, audio
+            stats = common.restore_shard(args.out, name, vae, rows, waves)
+            os.remove(path)
+            print(f"[{k + 1}/{len(todo)}] {s}: {stats['clips']} clips, {stats['hours']:.2f} h "
+                  f"in {time.time() - t0:.0f} s", flush=True)
+
+
 def main(args) -> None:
     common.out_dirs(args.out)
+    if args.restore:
+        return restore(args)
     shards = list_shards()[: args.limit or None]
     todo = [s for s in shards if not common.done(args.out, os.path.basename(s)[:-8])]
     print(f"{len(shards)} shards, {len(todo)} to do", flush=True)
@@ -96,4 +138,6 @@ if __name__ == "__main__":
     ap.add_argument("--out", default="/workspace/data/arabic/lahgtna")
     ap.add_argument("--workers", type=int, default=32, help="audio decoding threads")
     ap.add_argument("--limit", type=int, default=0, help="only the first N shards (testing)")
+    ap.add_argument("--restore", help="latents only, of these clips (uids, or a dataset manifest.jsonl)")
+    ap.add_argument("--fetchers", type=int, default=2, help="--restore: shards downloading ahead")
     main(ap.parse_args())

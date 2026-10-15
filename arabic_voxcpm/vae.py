@@ -29,6 +29,15 @@ def load_vae(model_dir: str, device: str = "cuda"):
     return vae.to(device).eval()
 
 
+def exact() -> None:
+    """TF32 off. Then a clip's latents do not depend on the batch it is encoded in (tests/test_vae.py; on an A10 99.99 %
+    of the fp16 values were the same across batch shapes, the rest 1 fp16 step apart). With TF32 (torch's default for
+    convolutions) the algorithms change with the batch shape: 47 % of the fp16 values differ, 6e-4 relative.
+    --restore encodes this way, so re-encoding some of a shard's clips gives what encoding all of them would."""
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_tf32 = False
+
+
 def frames(samples: int) -> int:
     return math.ceil(samples / HOP)
 
