@@ -280,3 +280,25 @@ def test_augmenter_changes_only_marked_references():
     other = {k: v.clone() for k, v in before.items()}
     aug(other, (4, 0))
     assert not torch.equal(other["audio_feats"], feats)
+
+
+def test_sample_rep_is_weighted_copy():
+    # teacher_data's sample(i, rep) and the weighted sampler's index i + rep * len draw the same sample
+    ds = _trainset(0.0)
+    ds.p_ref = 0.5  # some samples clone, some do not
+    for i in range(len(ds)):
+        for rep in range(3):
+            seq, info = ds.sample(i, rep)
+            other = ds[i + rep * len(ds)]
+            assert seq.keys() == other.keys()
+            for k in seq:
+                torch.testing.assert_close(seq[k], other[k])
+            assert (info["ref"] is None) == bool((seq["audio_mask"] == 1).eq(seq["loss_mask"] == 1).all())
+
+
+def test_untagged_set_has_no_tags():
+    ds = _trainset(0.0)
+    plain = D.TrainSet(ds.rows, ds.store, lambda t: [ord(c) % 97 for c in t], p_ref=1.0, p_no_tag=0.0, seed=5,
+                       tagged=False)
+    assert plain.tagged_ids == plain.text_ids != ds.tagged_ids
+    assert all(plain.sample(i)[1]["tagged"] for i in range(len(plain)))  # drawn as tagged, but the ids carry no tag

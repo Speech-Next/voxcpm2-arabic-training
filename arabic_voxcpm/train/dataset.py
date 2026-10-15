@@ -115,11 +115,12 @@ class LatentStore:
 
 
 class TrainSet(torch.utils.data.Dataset):
-    """Index i + k * len (k >= 1) is the k-th extra copy of row i in an epoch (weighted sampling): its own draws."""
+    """Index i + k * len (k >= 1) is the k-th extra copy of row i in an epoch (weighted sampling): its own draws.
+    tagged=False: the text alone, never a tag (a model whose dialect is its adapter, not a tag token)."""
 
     def __init__(self, rows: list[dict], store: LatentStore, tokenize, p_ref: float = 0.7, p_no_tag: float = 0.1,
                  ref_s: tuple[float, float] = (3.0, 10.0), seed: int = 0, p_ref_aug: float = 0.0,
-                 aug_variants: list[LatentStore] | None = None):
+                 aug_variants: list[LatentStore] | None = None, tagged: bool = True):
         self.rows = [r for r in rows if r["uid"] in store]
         self.store, self.p_ref, self.p_no_tag = store, p_ref, p_no_tag
         # reference augmentation: precomputed degraded variants (augment.py), else marked for the training step
@@ -127,8 +128,9 @@ class TrainSet(torch.utils.data.Dataset):
         self.ref_frames = (int(ref_s[0] * FPS), int(ref_s[1] * FPS))
         self.seed, self.epoch = seed, 0
         # as inference tokenizes them: tokenize(tag + text), and the text alone for the untagged samples
-        self.tagged_ids = [tokenize(dialects.tag_token(r["dialect"]) + r["text"]) for r in self.rows]
         self.text_ids = [tokenize(r["text"]) for r in self.rows]
+        self.tagged_ids = ([tokenize(dialects.tag_token(r["dialect"]) + r["text"]) for r in self.rows] if tagged
+                           else self.text_ids)
         by = defaultdict(list)
         for i, r in enumerate(self.rows):
             by[r["speaker"]].append(i)
@@ -142,15 +144,22 @@ class TrainSet(torch.utils.data.Dataset):
         return len(self.tagged_ids[i]) + 7 + (self.rows[i]["frames"] + 3) // 4 + (self.ref_frames[1] + 3) // 4
 
     def __getitem__(self, idx: int) -> dict:
-        i, copy = idx % len(self.rows), idx // len(self.rows)
-        rng = random.Random((self.seed, self.epoch, i).__hash__() if copy == 0 else (self.seed, self.epoch, i, copy).__hash__())
+        return self.sample(idx % len(self.rows), idx // len(self.rows))[0]
+
+    def sample(self, i: int, rep: int = 0) -> tuple[dict, dict]:
+        """The packed sequence and how it was made: {"ref": index of the cloned clip or None, "ref_start",
+        "ref_frames" (latent frames), "tagged"}. rep > 0: another draw of the same clip (reference, window, tag), the
+        same draws as index i + rep * len."""
+        rng = random.Random((self.seed, self.epoch, i).__hash__() if rep == 0 else (self.seed, self.epoch, i, rep).__hash__())
         r = self.rows[i]
-        ids = self.tagged_ids[i] if rng.random() >= self.p_no_tag else self.text_ids[i]
+        tagged = rng.random() >= self.p_no_tag
+        ids = self.tagged_ids[i] if tagged else self.text_ids[i]
         target = pack.patches(self.store[r["uid"]].float())
         others = [j for j in self.same_speaker[i] if j != i]
         marks = self.p_ref_aug > 0 and not self.aug_variants  # the training step degrades marked references
         if others and rng.random() < self.p_ref:
-            ref_uid = self.rows[rng.choice(others)]["uid"]
+            j = rng.choice(others)
+            ref_uid = self.rows[j]["uid"]
             ref = self.store[ref_uid].float()
             n = min(len(ref), rng.randint(*self.ref_frames))
             a = rng.randint(0, len(ref) - n)
@@ -167,11 +176,11 @@ class TrainSet(torch.utils.data.Dataset):
                     k = (n + pack.PATCH - 1) // pack.PATCH
                     seq["ref_aug"][1 : 1 + k] = pack.PATCH
                     seq["ref_aug"][k] = n - pack.PATCH * (k - 1)
-            return seq
+            return seq, {"ref": j, "ref_start": a, "ref_frames": n, "tagged": tagged}
         seq = pack.plain(ids, target)
         if marks:
             seq["ref_aug"] = torch.zeros(len(seq["text_tokens"]), dtype=torch.int32)
-        return seq
+        return seq, {"ref": None, "ref_start": 0, "ref_frames": 0, "tagged": tagged}
 
 
 class TokenBudgetBatches(torch.utils.data.Sampler):
