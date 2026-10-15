@@ -97,6 +97,11 @@ def main(args, extra: list[str]) -> None:
         cmd, env = generate_cmd(args, set_dir, run, extra)
         print("+", " ".join(cmd), flush=True)
         subprocess.run(cmd, env=env, cwd=REPO, check=True)
+    if args.engine != "dq" and "ARABIC_TEXT_PY" not in os.environ:
+        # scoring spells the numbers out with the generating engine's normalizer (metrics.spell_numbers)
+        f = os.path.join(args.engine_path or ENGINE, "nanovllm_voxcpm", "arabic_text.py")
+        if os.path.exists(f):
+            os.environ["ARABIC_TEXT_PY"] = f
     if pending(run, set_dir):
         s = score.Scorer()
         score.score_gt(set_dir, s)

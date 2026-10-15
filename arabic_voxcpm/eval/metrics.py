@@ -38,7 +38,8 @@ def spell_numbers(text: str, group: str) -> str:
     if _SPELL is None:
         import importlib.util
 
-        path = os.environ.get("ARABIC_TEXT_PY", "/workspace/nanovllm-voxcpm-opt/nanovllm_voxcpm/arabic_text.py")
+        default = "/workspace/voxcpm2-arabic-dialects-turbo/nanovllm_voxcpm/arabic_text.py"  # run.py sets the engine's
+        path = os.environ.get("ARABIC_TEXT_PY", default)
         spec = importlib.util.spec_from_file_location("arabic_text", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
