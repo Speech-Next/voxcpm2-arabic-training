@@ -30,8 +30,8 @@
 #
 # Then:
 # - merged best / last -> /workspace/models/arabic-teacher-v3.1-{best,last};
-# - #2 evaluation (v2, ref, bf16, as v3) against base-adapters-v2-ref and teacher-v3-best (reused: the engine changes
-#   since are lossless, checked by regenerating teacher-v3-best bit-identically);
+# - #2 evaluation (v2, ref, bf16, as v3) against base-adapters-v2-ref and teacher-v3-best (their runs reused), with a
+#   second run of teacher-v3-best for the run-to-run noise;
 # - report;
 # - /workspace/runs/teacher-v3.1/DONE.
 set -euo pipefail
@@ -109,11 +109,16 @@ export_merged('$MODEL', '$RUN/$ck', '$OUT')"
   mkdir -p "$OUT/lora" && cp "$RUN/$ck/trainable.safetensors" "$RUN/$ck/train_state.json" "$OUT/lora/"  # as on the Hub
 done
 
+# Run-to-run noise: bf16 generation is not bit-reproducible (batching depends on timing: two runs of today's engine
+# share 453 of 1320 wavs, today's against v3's run 400), so teacher-v3-best regenerated once more and scored
+# (teacher-v3-best-r2) measures the noise of a model against itself, per dialect.
+step "noise floor: teacher-v3-best again (teacher-v3-best-r2)"
+evalrun teacher-v3-best-r2 /workspace/models/arabic-teacher-v3-best --no-report
 for ck in best last; do
   step "evaluate $NAME-$ck"
   evalrun "$NAME-$ck" "/workspace/models/arabic-$NAME-$ck" --baseline "${BASES[@]}"  # tagged: v2's dialect_map.json
 done
 py "$EVAL_PY" -m arabic_voxcpm.eval.report --base "$EVAL/base-adapters-v2-ref" --base "$EVAL/teacher-v3-best" \
-  "$EVAL/$NAME-best" "$EVAL/$NAME-last" --md "$RUN/report.md"
+  "$EVAL/teacher-v3-best-r2" "$EVAL/$NAME-best" "$EVAL/$NAME-last" --md "$RUN/report.md"
 touch "$RUN/DONE"
 step "done"
