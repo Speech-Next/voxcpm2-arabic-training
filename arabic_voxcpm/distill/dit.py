@@ -7,7 +7,7 @@
 The student is a LocDiT of the teacher's architecture (--layers: fewer decoder layers), run for K Euler steps on the
 conditional input only, x <- x - dt_j * u(x, mu, t_j, cond, dt_j), over a fixed grid (--schedule, default the
 current student's 1 -> 0.7071 -> 0) rounded to bf16 as the engine rounds it. Mean mode (default): the step size goes
-to the estimator's dt input. --init: ``current`` (the English student, kadirnar/VoxCPM2-Turbo-distilled-DiT
+to the estimator's dt input. --init: ``current`` (the English student, VoxCPM-Kernel/VoxCPM2-Turbo-distilled-DiT
 student_k2_dmd.pt; it was trained with dt = 0), ``teacher`` (the teacher's LocDiT) or a checkpoint.
 
 Adapters: teacher data of an adapter teacher (teacher_data.py --teacher adapters) holds each row's adapter. A batch
@@ -50,7 +50,7 @@ import torch.nn.functional as F
 from arabic_voxcpm.distill import sampler
 
 PREFIX = "feat_decoder.estimator."
-CURRENT_STUDENT = "kadirnar/VoxCPM2-Turbo-distilled-DiT:student_k2_dmd.pt"
+CURRENT_STUDENT = "VoxCPM-Kernel/VoxCPM2-Turbo-distilled-DiT:student_k2_dmd.pt"
 KEYS = ("mu", "cond", "z", "x", "target")
 
 

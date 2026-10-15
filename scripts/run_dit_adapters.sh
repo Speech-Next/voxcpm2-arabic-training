@@ -30,7 +30,7 @@ SD=${SD:-/workspace/runs/$NAME}
 PATCHES=${PATCHES:-1500000}
 VERIFY=${VERIFY:-2000}
 MSE_ITERS=${MSE_ITERS:-4000}; SPEC_ITERS=${SPEC_ITERS:-1500}; DMD_ITERS=${DMD_ITERS:-1500}
-CURRENT=kadirnar/VoxCPM2-Turbo-distilled-DiT:student_k2_dmd.pt
+CURRENT=VoxCPM-Kernel/VoxCPM2-Turbo-distilled-DiT:student_k2_dmd.pt
 EVAL=/workspace/data/arabic/eval/runs
 LOG=${LOG:-/workspace/data/arabic/logs/$NAME.log}
 mkdir -p "$SD" "$(dirname "$LOG")"
@@ -47,7 +47,10 @@ evalrun() {  # run name, checkpoint ("none": the original LocDiT), [run.py args]
 }
 gpu_wait() {  # the evaluations (generation + six scoring models) do not fit next to a training run
   [ -z "$WAIT_FOR" ] && return 0
-  while pgrep -f "[${WAIT_FOR:0:1}]${WAIT_FOR:1}" >/dev/null; do sleep 120; done
+  # "-m <module>" with literal dots, so a shell that only mentions the module's file path does not match; "[-]" keeps
+  # this pattern from matching a command line that contains the pattern itself
+  local pat="[-]m ${WAIT_FOR//./[.]}( |\$)"
+  while pgrep -f "$pat" >/dev/null; do sleep 120; done
 }
 cer() {  # a run's mean CER over both ASRs (best of the two per clip), the #2 choice of run_student.sh
   (cd "$REPO" && PYTHONPATH="$REPO" "$SCORE_PY" -c "
