@@ -5,7 +5,8 @@
 Loss: VoxCPM2's own (LocDiT flow matching on the target patches + stop), weighted 1 : 1 as upstream. Batches hold up to
 --budget padded positions; --accum batches per optimizer step. Every --val-every steps: the loss on a fixed validation
 set (SADA's validation split + a sample of the other corpora's clips, never trained on); every --save-every steps a
-checkpoint (trainable tensors + optimizer), resumable with --resume.
+checkpoint (trainable tensors + optimizer), resumable with --resume. --init starts from another run's checkpoint
+(weights only, a new schedule): teacher-v3.1 continues teacher-v3 with other corpus weights.
 
 teacher-v3 (#5): --corpus-weights draws rows per epoch by corpus or corpus:dialect weight (dataset.py); --ref-aug p
 degrades the reference of a cloning sample with probability p (augment.py): in the training step on the GPU, or from
@@ -127,6 +128,10 @@ def main(args) -> None:
         step, epoch, best = st["step"], st["epoch"], st.get("best", best)
         opt.load_state_dict(torch.load(os.path.join(args.resume, "optim.pt"), map_location="cuda"))
         emit({"event": "resume", "from": args.resume, "step": step})
+    elif args.init:  # a continuation: the checkpoint's weights, step 0 of a new schedule; its loss for reference
+        st = M.load_init(model, args.init)
+        emit({"event": "init", "from": args.init, "from_step": st.get("step"),
+              **{f"init_{k}": v for k, v in validate(model, val_batches, "cuda").items()}})
     model.train()
     device = "cuda"
     t0, seen_tok, acc = time.time(), 0, 0
@@ -183,6 +188,8 @@ def main(args) -> None:
                 path = os.path.join(args.out, "last")
                 M.save(model, path, {"step": step, "epoch": epoch, "best": best})
                 torch.save(opt.state_dict(), os.path.join(path, "optim.pt"))
+                if args.keep_steps:  # weights only, for evaluating checkpoints that are neither best nor last
+                    M.save(model, os.path.join(args.out, f"step-{step}"), {"step": step, "epoch": epoch})
             if step >= args.steps:
                 break
         epoch += 1
@@ -230,4 +237,7 @@ if __name__ == "__main__":
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--resume")
+    ap.add_argument("--keep-steps", action="store_true", help="also keep every saved checkpoint as step-N/ (weights)")
+    ap.add_argument("--init", help="start from this checkpoint's trainable tensors (a best/ or last/ directory) with a "
+                                   "fresh optimizer and schedule; --resume wins over it")
     main(ap.parse_args())
