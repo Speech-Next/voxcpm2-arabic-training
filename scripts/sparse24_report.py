@@ -11,7 +11,7 @@ import os
 import re
 import statistics
 
-EVAL = "/workspace/data/arabic/eval/runs"
+EVAL = os.environ.get("EVAL_RUNS", "/workspace/data/arabic/eval/runs")
 METRICS = [("cer_min", "CER % (best ASR)", 2), ("wer_min", "WER % (best ASR)", 2), ("utmos", "UTMOS", 2),
            ("voice_sim", "speaker sim", 3), ("dnsmos_ovrl", "DNSMOS", 2), ("adi_ok", "dialect region %", 1),
            ("late_stop", "late stop %", 2), ("runaway", "runaway %", 2)]
