@@ -22,6 +22,9 @@
 # pruned evaluations and the TTFA runs (the same 2:4 pattern, so the same speed) are reused. DRY_RUN=1 prints the steps
 # that would run and runs nothing.
 #     TAG=r2 STEPS=3000 TRAIN_ARGS="--w-stop 10" WAIT_FOR=/dev/null nohup scripts/run_sparse24.sh &
+# DENSE_LAYERS="24 25 26 27": those base_lm layers keep their dense FFN. The pruned model is SD/pruned-<tag>, derived
+# from SD/pruned on the CPU when that exists (the pruning is sequential: the earlier layers are the same), else pruned;
+# the speed changes, so the TTFA runs are the tag's own (SD/ttfa-<tag>).
 set -euo pipefail
 NAME=${1:-sparse24}
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -36,6 +39,10 @@ TAG=${TAG:-}
 SFX=${TAG:+-$TAG}
 TRAIN_OUT=$SD/train$SFX
 MODEL_OUT=$SD/model$SFX
+DENSE_LAYERS=${DENSE_LAYERS:-}
+PRUNED=$SD/pruned${DENSE_LAYERS:+$SFX}
+TTFA_DIR=$SD/ttfa${DENSE_LAYERS:+$SFX}
+N_SPARSE=$((28 - $(echo $DENSE_LAYERS | wc -w)))
 RELEASE=${RELEASE:-/workspace/runs/sparse-8/release$SFX/VoxCPM2-Arabic-Dialects-Sparse24}
 WAIT_FOR=${WAIT_FOR:-/workspace/runs/teacher-v3.1/DONE}
 DONE_FILE=${DONE_FILE:-/workspace/runs/sparse-8/PHASE2${TAG:+_${TAG^^}}_DONE}
@@ -89,19 +96,28 @@ step "0. phase 1's alternating benchmark on the randomly pruned model, then that
 until [ -n "$DRY_RUN" ] || grep -q "^done" "$E2E_LOG" 2>/dev/null || ! pgrep -f "sparse-8/e2e[.]sh" > /dev/null; do sleep 60; done
 rm -rf "$RANDOM_MODEL"
 
-if [ ! -f "$SD/pruned/source.json" ]; then
-  step "1. prune ($CALIB_BATCHES calibration batches)"
-  gpu py prune --model "$MODEL" --out "$SD/pruned" --seed 1 --calib-batches "$CALIB_BATCHES"
+if [ ! -f "$PRUNED/source.json" ]; then
+  if [ -n "$DENSE_LAYERS" ] && [ -f "$SD/pruned/source.json" ]; then
+    step "1. derive the pruned model with layers $DENSE_LAYERS dense from $SD/pruned (CPU)"
+    # shellcheck disable=SC2086
+    py derive --pruned "$SD/pruned" --dense-layers $DENSE_LAYERS --out "$PRUNED"
+  else
+    step "1. prune ($CALIB_BATCHES calibration batches${DENSE_LAYERS:+, layers $DENSE_LAYERS dense})"
+    # shellcheck disable=SC2086
+    gpu py prune --model "$MODEL" --out "$PRUNED" --seed 1 --calib-batches "$CALIB_BATCHES" ${DENSE_LAYERS:+--dense-layers $DENSE_LAYERS}
+  fi
 fi
-if [ ! -f "$SD/pruned-engine.ok" ]; then
-  step "1b. the engine on the pruned model (loads it, uses the sparse kernels, speaks)"
+if [ ! -f "$PRUNED-engine.ok" ]; then
+  step "1b. the engine on the pruned model (loads it, uses the sparse kernels on $N_SPARSE layers, speaks)"
   check() {
-    (cd "$ENGINE" && PYTHONPATH="$ENGINE" "$ENGINE_PY" examples/voice_clone.py --model "$SD/pruned" --voice "$VOICE" \
-       --dialect najdi --text "هلا والله، كيف حالك اليوم؟" --out "$SD/pruned-check.wav") > "$SD/pruned-check.log" 2>&1
+    (cd "$ENGINE" && PYTHONPATH="$ENGINE" "$ENGINE_PY" examples/voice_clone.py --model "$PRUNED" --voice "$VOICE" \
+       --dialect najdi --text "هلا والله، كيف حالك اليوم؟" --out "$PRUNED-check.wav") > "$PRUNED-check.log" 2>&1
   }
-  gpu check || { tail -30 "$SD/pruned-check.log"; exit 1; }
-  grep -q "28 with a 2:4 sparse FFN" "$SD/pruned-check.log" || { echo "the engine did not use the sparse kernels"; exit 1; }
-  [ -s "$SD/pruned-check.wav" ] && touch "$SD/pruned-engine.ok"
+  gpu check || { tail -30 "$PRUNED-check.log"; exit 1; }
+  if [ -z "$DRY_RUN" ]; then
+    grep -q "$N_SPARSE with a 2:4 sparse FFN" "$PRUNED-check.log" || { echo "the engine did not use the sparse kernels"; exit 1; }
+    [ -s "$PRUNED-check.wav" ] && touch "$PRUNED-engine.ok"
+  fi
 fi
 if ! grep -q '"complete": true' "$SD/targets/manifest.json" 2>/dev/null; then
   step "2. record the dense model's targets ($PATCHES target patches)"
@@ -110,11 +126,11 @@ fi
 if [ ! -f "$TRAIN_OUT/DONE" ]; then
   step "3. train ($STEPS steps, lr $LR $TRAIN_ARGS) -> $TRAIN_OUT"
   # shellcheck disable=SC2086
-  gpu py train --pruned "$SD/pruned" --targets "$SD/targets" --out "$TRAIN_OUT" --steps "$STEPS" --lr "$LR" $TRAIN_ARGS
+  gpu py train --pruned "$PRUNED" --targets "$SD/targets" --out "$TRAIN_OUT" --steps "$STEPS" --lr "$LR" $TRAIN_ARGS
 fi
 if [ ! -f "$MODEL_OUT/model.safetensors" ]; then
   step "4. export the recovered model -> $MODEL_OUT"
-  py export --pruned "$SD/pruned" --ckpt "$TRAIN_OUT/best" --out "$MODEL_OUT"
+  py export --pruned "$PRUNED" --ckpt "$TRAIN_OUT/best" --out "$MODEL_OUT"
 fi
 
 evalrun() {  # run name, model, [run.py args]: generate (once) -> score -> report
@@ -131,22 +147,26 @@ for spec in "$NAME-dense:$MODEL:dit-adapters-dmd" "$NAME-pruned:$SD/pruned:$NAME
   fi
 done
 
-if [ ! -f "$SD/ttfa/sparse-2.txt" ]; then
-  step "6. TTFA: dense and sparse alternating, twice"
-  mkdir -p "$SD/ttfa"
-  bench() {  # out file, model
-    (cd "$ENGINE" && PYTHONPATH="$ENGINE" NANOVLLM_BUSY_POLL_S=30 "$ENGINE_PY" examples/benchmark.py --model "$2" \
-       --levels 1,8,64,200 --rounds 5 > "$1.tmp" 2> "$1.err" && mv "$1.tmp" "$1")
-  }
-  export -f bench
-  export ENGINE ENGINE_PY
-  gpu bash -c "for i in 1 2; do bench '$SD/ttfa/dense-'\$i.txt '$MODEL'; bench '$SD/ttfa/sparse-'\$i.txt '$MODEL_OUT'; done"
-fi
+bench() {  # out file, model: one benchmark run under the lock
+  (cd "$ENGINE" && PYTHONPATH="$ENGINE" NANOVLLM_BUSY_POLL_S=30 "$ENGINE_PY" examples/benchmark.py --model "$2" \
+     --levels 1,8,64,200 --rounds 5 > "$1.tmp" 2> "$1.err" && mv "$1.tmp" "$1")
+}
+if [ -n "$DRY_RUN" ]; then bench() { echo "  [gpu] benchmark.py --model $2 > $1"; }; fi
+mkdir -p "$TTFA_DIR"
+for i in 1 2; do  # dense and sparse alternating, twice; one lock per run (other jobs may run between)
+  for kind in dense sparse; do
+    if [ ! -f "$TTFA_DIR/$kind-$i.txt" ]; then
+      step "6. TTFA: $kind, run $i -> $TTFA_DIR"
+      if [ "$kind" = dense ]; then m=$MODEL; else m=$MODEL_OUT; fi
+      if [ -n "$DRY_RUN" ]; then bench "$TTFA_DIR/$kind-$i.txt" "$m"; else gpu bench "$TTFA_DIR/$kind-$i.txt" "$m"; fi
+    fi
+  done
+done
 
 step "7. summary and the release directory"
 if [ ! -f "$RELEASE/model.safetensors" ]; then
-  py export --pruned "$SD/pruned" --ckpt "$TRAIN_OUT/best" --out "$RELEASE" --copy
+  py export --pruned "$PRUNED" --ckpt "$TRAIN_OUT/best" --out "$RELEASE" --copy
 fi
-report --name "$NAME" --sd "$SD" --release "$RELEASE" --tag "$TAG"
+report --name "$NAME" --sd "$SD" --release "$RELEASE" --tag "$TAG" --ttfa "$TTFA_DIR" --pruned "$PRUNED"
 echo "ok: $SD/summary$SFX.md, release directory $RELEASE (not uploaded)" > "$DONE_FILE"
 step "done"

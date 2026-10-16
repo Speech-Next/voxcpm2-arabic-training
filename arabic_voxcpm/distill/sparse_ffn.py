@@ -444,6 +444,36 @@ def write_model_dir(src: str, out: str, state: dict, masks: dict | None, link: b
             shutil.copy(os.path.realpath(s), d)
 
 
+def derive(args) -> None:
+    """A pruned directory whose last base_lm layers keep their dense FFN, made from a full prune without the GPU: the
+    pruning is sequential (layer l's calibration inputs come through the already pruned layers < l), so layers before
+    the first dense one are exactly what a prune with --dense-layers gives. Only a suffix of layers can be dense this
+    way (a later layer was pruned on the inputs of a pruned earlier one)."""
+    from safetensors.torch import load_file
+
+    masks = load_file(os.path.join(args.pruned, MASKS))
+    n_layers = 1 + max(int(k.split(".")[2]) for k in masks)
+    dense = sorted(set(args.dense_layers))
+    if not dense or dense != list(range(dense[0], n_layers)):
+        raise SystemExit(f"--dense-layers must be the last layers (a suffix of 0..{n_layers - 1}), got {dense}")
+    source = json.load(open(os.path.join(args.pruned, "source.json")))["source"]
+    state = load_file(os.path.join(source, "model.safetensors"))
+    pruned = load_file(os.path.join(args.pruned, "model.safetensors"))
+    keep = {}
+    for key, m in masks.items():
+        if int(key.split(".")[2]) not in dense:
+            state[key] = pruned[key]
+            keep[key] = m
+    write_model_dir(source, args.out, state, keep)
+    stats_path = os.path.join(args.pruned, "prune.json")
+    if os.path.exists(stats_path):
+        stats = {k: v for k, v in json.load(open(stats_path)).items() if int(k) not in dense}
+        json.dump(stats, open(os.path.join(args.out, "prune.json"), "w"), indent=1)
+    json.dump({"source": source, "derived_from": os.path.realpath(args.pruned), "dense_layers": dense},
+              open(os.path.join(args.out, "source.json"), "w"))
+    print(f"{len(keep)} FFN weights 2:4 sparse, layers {dense} dense -> {args.out}", flush=True)
+
+
 # ------------------------------------------------------------------------------------------------- record
 TARGETS = ("mu", "stop", "fsq", "fsq_mask")
 
@@ -724,6 +754,10 @@ def main() -> None:
     p.add_argument("--blocksize", type=int, default=128)
     p.add_argument("--percdamp", type=float, default=0.01)
     p.add_argument("--dense-layers", type=int, nargs="*", default=[], help="base_lm layers whose FFN stays dense")
+    dv = sub.add_parser("derive")
+    dv.add_argument("--pruned", required=True, help="a full prune's directory")
+    dv.add_argument("--dense-layers", type=int, nargs="+", required=True)
+    dv.add_argument("--out", required=True)
     r = sub.add_parser("record")
     add_data_args(r)
     r.add_argument("--out", required=True)
@@ -751,7 +785,7 @@ def main() -> None:
     e.add_argument("--out", required=True)
     e.add_argument("--copy", action="store_true", help="copy the source files instead of linking them")
     a = ap.parse_args()
-    {"prune": prune, "record": record, "train": train, "export": export}[a.cmd](a)
+    {"prune": prune, "derive": derive, "record": record, "train": train, "export": export}[a.cmd](a)
 
 
 if __name__ == "__main__":

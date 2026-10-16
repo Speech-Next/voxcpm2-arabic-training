@@ -73,3 +73,29 @@ def test_report_of_a_retry(tmp_path):
     assert "| recovered, first run | **1.50 (+0.50" in summary, summary  # its intervals exclude 0: bold
     assert "| **recovered (r2)** | **1.20 (+0.20" in summary and "(best, step 3000)" in summary, summary
     assert not (sd / "summary.md").exists()
+
+
+def test_report_with_dense_layers(tmp_path):
+    """--pruned with dense layers (run_sparse24.sh DENSE_LAYERS) and --ttfa: the card says how many layers are sparse."""
+    runs, sd, rel = tmp_path / "runs", tmp_path / "sd", tmp_path / "release"
+    for run in ("x-recovered", "x-recovered-r3", "x-pruned"):
+        _report(runs / run, "x-dense", {k: 0.1 for k in KEYS} | {"voice_sim": 0.0, "late_stop": 0.0, "runaway": 0.0})
+    (sd / "ttfa-r3").mkdir(parents=True)
+    for kind, ms in (("dense", 92.0), ("sparse", 86.0)):
+        (sd / "ttfa-r3" / f"{kind}-1.txt").write_text(f"| 200 | {ms} ms | 1 ms | {ms + 1} ms | 1 s |\n")
+    (sd / "pruned-r3").mkdir()
+    (sd / "pruned-r3" / "source.json").write_text(json.dumps({"source": "s", "dense_layers": [24, 25, 26, 27]}))
+    (sd / "train-r3" / "best").mkdir(parents=True)
+    (sd / "train-r3" / "log.jsonl").write_text(json.dumps({"step": 0, "val": {"loss": 0.5}}) + "\n")
+    (sd / "train-r3" / "best" / "state.json").write_text(json.dumps({"step": 2500, "val": {"loss": 0.1}}))
+    (sd / "targets").mkdir()
+    (sd / "targets" / "manifest.json").write_text(json.dumps({"batches": 550, "config": {"patches": 1500000}}))
+    rel.mkdir()
+    out = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "sparse24_report.py"), "--name", "x", "--sd",
+                          str(sd), "--release", str(rel), "--tag", "r3", "--ttfa", str(sd / "ttfa-r3"), "--pruned",
+                          str(sd / "pruned-r3")], env={**os.environ, "EVAL_RUNS": str(runs)}, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert "TTFA at 200 requests +6.0 ms" in (sd / "summary-r3.md").read_text()
+    card = (rel / "README.md").read_text()
+    assert "in 24 of its 28 layers" in card and "layers 24, 25, 26, 27 keep their dense FFN" in card
+    assert "`24 with a 2:4 sparse FFN`" in card

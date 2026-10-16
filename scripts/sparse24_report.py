@@ -49,14 +49,20 @@ def main():
     ap.add_argument("--sd", required=True)
     ap.add_argument("--release", required=True)
     ap.add_argument("--tag", default="", help="a retry's tag (run_sparse24.sh TAG): its run, train directory, summary")
+    ap.add_argument("--ttfa", default="", help="the TTFA runs' directory (default SD/ttfa)")
+    ap.add_argument("--pruned", default="", help="the pruned model's directory (default SD/pruned): its dense layers")
     a = ap.parse_args()
+    ttfa_dir = a.ttfa or os.path.join(a.sd, "ttfa")
+    src = os.path.join(a.pruned or os.path.join(a.sd, "pruned"), "source.json")
+    dense_layers = json.load(open(src)).get("dense_layers", []) if os.path.exists(src) else []
+    n_sparse = 28 - len(dense_layers)
     sfx = f"-{a.tag}" if a.tag else ""
     dense, pruned, rec = f"{a.name}-dense", f"{a.name}-pruned", f"{a.name}-recovered{sfx}"
     c_rec, c_pr = compare(rec, dense), compare(pruned, dense)
     c_first = compare(f"{a.name}-recovered", dense) if a.tag else None  # the first recovery, for comparison
     base = c_rec  # 'base' fields: the dense model's means
 
-    runs = {k: [ttfa(p) for p in sorted(glob.glob(os.path.join(a.sd, "ttfa", f"{k}-*.txt")))] for k in ("dense", "sparse")}
+    runs = {k: [ttfa(p) for p in sorted(glob.glob(os.path.join(ttfa_dir, f"{k}-*.txt")))] for k in ("dense", "sparse")}
     levels = sorted(set.intersection(*[set(t) for v in runs.values() for t in v])) if all(runs.values()) else []
 
     def mean(kind, level, i):
@@ -112,6 +118,10 @@ def main():
     qb = lambda k, dg: f"{base[k]['base']:.{dg}f}"  # noqa: E731
     ttfa_rows = "\n".join(f"| {lv} | {mean('dense', lv, 0):.0f} / {mean('dense', lv, 2):.0f} ms | "
                           f"{mean('sparse', lv, 0):.0f} / {mean('sparse', lv, 2):.0f} ms |" for lv in levels)
+    ffn_row = ("base_lm's FFN (gate, up, down of its 28 layers): 2:4 sparse along the input; everything else unchanged"
+               if not dense_layers else
+               f"base_lm's FFN (gate, up, down) in {n_sparse} of its 28 layers: 2:4 sparse along the input; layers "
+               f"{', '.join(map(str, dense_layers))} keep their dense FFN; everything else unchanged")
     card = f"""---
 license: cc-by-nc-sa-4.0
 base_model: VoxCPM-Kernel/VoxCPM2-Arabic-Dialects
@@ -139,7 +149,7 @@ the GPU's sparse tensor cores, so the first audio comes sooner. The 11 dialect a
 | | |
 |---|---|
 | Base | VoxCPM2-Arabic-Dialects (VoxCPM2, 2B parameters, 48 kHz) with its 11 adapters |
-| Changed weights | base_lm's FFN (gate, up, down of its 28 layers): 2:4 sparse along the input; everything else unchanged |
+| Changed weights | {ffn_row} |
 | Pruning | SparseGPT 2:4, calibrated on VoxCPM2-Arabic-Train-v2 contexts with every adapter |
 | Recovery | {best['step']} steps of distillation from the dense model with the same adapter |
 | Engine | detects the 2:4 weights itself and uses its sparse int8 kernels (no option needed) |
@@ -175,7 +185,7 @@ await tts.add_voice("ahmed", "ahmed.wav")
 audio = await tts.synthesize("هلا والله، كيف حالك اليوم؟", dialect="najdi", voice="ahmed")
 ```
 
-The engine logs `28 with a 2:4 sparse FFN` when it uses the sparse kernels (an Ampere or newer GPU).
+The engine logs `{n_sparse} with a 2:4 sparse FFN` when it uses the sparse kernels (an Ampere or newer GPU).
 
 ## Training
 

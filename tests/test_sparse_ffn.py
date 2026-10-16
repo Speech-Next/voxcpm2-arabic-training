@@ -1,6 +1,7 @@
 """2:4 sparse base_lm FFN (issue #8, phase 2): SparseGPT's 2:4 solve, the masks, the trainable sparse layer, the plan,
 the losses and the step order on the CPU; lm_outputs against train.forward on the real model (GPU)."""
 
+import json
 import os
 from collections import Counter
 
@@ -145,3 +146,31 @@ def test_lm_outputs_mu_matches_dit_inputs():
     torch.testing.assert_close(mu.float(), mu_ref.float(), rtol=0, atol=0)
     assert stop.shape == (len(mu), 2) and fsq.shape[0] == len(mu) and prev_audio.dtype == torch.bool
     assert int(prev_audio.sum()) == int(lm_mask.sum()) - 2  # the first target patch of each sequence follows text
+
+
+def test_derive_keeps_the_last_layers_dense(tmp_path):
+    from argparse import Namespace
+
+    from safetensors.torch import load_file, save_file
+
+    src, pr = tmp_path / "src", tmp_path / "pruned"
+    src.mkdir()
+    (src / "config.json").write_text("{}")
+    keys = [f"base_lm.layers.{li}.mlp.{n}.weight" for li in range(3) for n in S.FFN]
+    dense_w = {k: torch.full((4, 8), 1.0) for k in keys} | {"other": torch.ones(2)}
+    save_file(dense_w, str(src / "model.safetensors"))
+    pruned_w = {k: torch.full((4, 8), 2.0) for k in keys} | {"other": torch.ones(2)}
+    masks = {k: torch.zeros(4, 2, dtype=torch.uint8) for k in keys}
+    S.write_model_dir(str(src), str(pr), pruned_w, masks)
+    (pr / "source.json").write_text(json.dumps({"source": str(src)}))
+    (pr / "prune.json").write_text(json.dumps({"0": {}, "1": {}, "2": {}}))
+    S.derive(Namespace(pruned=str(pr), dense_layers=[2], out=str(tmp_path / "out")))
+    out = load_file(str(tmp_path / "out" / "model.safetensors"))
+    for k in keys:
+        assert float(out[k][0, 0]) == (1.0 if ".layers.2." in k else 2.0), k
+    m = load_file(str(tmp_path / "out" / S.MASKS))
+    assert sorted(m) == sorted(k for k in keys if ".layers.2." not in k)
+    assert json.load(open(tmp_path / "out" / "source.json"))["source"] == str(src)
+    assert sorted(json.load(open(tmp_path / "out" / "prune.json"))) == ["0", "1"]
+    with pytest.raises(SystemExit):  # not a suffix: layer 2 was pruned on layer 1's pruned outputs
+        S.derive(Namespace(pruned=str(pr), dense_layers=[1], out=str(tmp_path / "bad")))
