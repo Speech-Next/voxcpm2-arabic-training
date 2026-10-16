@@ -46,3 +46,30 @@ def test_report_and_card(tmp_path):
     assert [i["met"] for i in items] == [True, True, True, True]
     card = (rel / "README.md").read_text()
     assert card.startswith("---\nlicense: cc-by-nc-sa-4.0") and "| 200 | 92 / 93 ms | 85 / 86 ms |" in card
+
+
+def test_report_of_a_retry(tmp_path):
+    """--tag: the retry's run and train directory, the first recovery as an extra row, a summary of its own."""
+    runs, sd, rel = tmp_path / "runs", tmp_path / "sd", tmp_path / "release"
+    for run, d in (("x-recovered", 0.5), ("x-recovered-r2", 0.2), ("x-pruned", 1.0)):
+        _report(runs / run, "x-dense", {k: d for k in KEYS} | {"voice_sim": 0.0, "late_stop": 0.0, "runaway": 0.0})
+    (sd / "ttfa").mkdir(parents=True)
+    for kind in ("dense", "sparse"):
+        (sd / "ttfa" / f"{kind}-1.txt").write_text(f"| 200 | {92.0 if kind == 'dense' else 85.0} ms | 1 ms | 1 ms | 1 s |\n")
+    for t in ("train", "train-r2"):
+        (sd / t / "best").mkdir(parents=True)
+        (sd / t / "log.jsonl").write_text(json.dumps({"step": 0, "val": {"loss": 0.5}}) + "\n")
+        (sd / t / "best" / "state.json").write_text(json.dumps({"step": 3000 if t == "train-r2" else 2000,
+                                                               "val": {"loss": 0.1}}))
+    (sd / "targets").mkdir()
+    (sd / "targets" / "manifest.json").write_text(json.dumps({"batches": 550, "config": {"patches": 1500000}}))
+    rel.mkdir()
+    out = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "sparse24_report.py"), "--name", "x", "--sd",
+                          str(sd), "--release", str(rel), "--tag", "r2"], env={**os.environ, "EVAL_RUNS": str(runs)},
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    summary = (sd / "summary-r2.md").read_text()
+    assert "CER +0.20, WER +0.20 | yes" in summary, summary
+    assert "| recovered, first run | **1.50 (+0.50" in summary, summary  # its intervals exclude 0: bold
+    assert "| **recovered (r2)** | **1.20 (+0.20" in summary and "(best, step 3000)" in summary, summary
+    assert not (sd / "summary.md").exists()

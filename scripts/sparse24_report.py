@@ -48,9 +48,12 @@ def main():
     ap.add_argument("--name", default="sparse24")
     ap.add_argument("--sd", required=True)
     ap.add_argument("--release", required=True)
+    ap.add_argument("--tag", default="", help="a retry's tag (run_sparse24.sh TAG): its run, train directory, summary")
     a = ap.parse_args()
-    dense, pruned, rec = f"{a.name}-dense", f"{a.name}-pruned", f"{a.name}-recovered"
+    sfx = f"-{a.tag}" if a.tag else ""
+    dense, pruned, rec = f"{a.name}-dense", f"{a.name}-pruned", f"{a.name}-recovered{sfx}"
     c_rec, c_pr = compare(rec, dense), compare(pruned, dense)
+    c_first = compare(f"{a.name}-recovered", dense) if a.tag else None  # the first recovery, for comparison
     base = c_rec  # 'base' fields: the dense model's means
 
     runs = {k: [ttfa(p) for p in sorted(glob.glob(os.path.join(a.sd, "ttfa", f"{k}-*.txt")))] for k in ("dense", "sparse")}
@@ -59,9 +62,10 @@ def main():
     def mean(kind, level, i):
         return statistics.mean(t[level][i] for t in runs[kind])
 
-    log = [json.loads(l) for l in open(os.path.join(a.sd, "train", "log.jsonl"))]
+    train = os.path.join(a.sd, f"train{sfx}")
+    log = [json.loads(l) for l in open(os.path.join(train, "log.jsonl"))]
     vals = [r for r in log if "val" in r]
-    best = json.load(open(os.path.join(a.sd, "train", "best", "state.json")))
+    best = json.load(open(os.path.join(train, "best", "state.json")))
     man = json.load(open(os.path.join(a.sd, "targets", "manifest.json")))
 
     d = {k: c_rec[k]["diff"] for k, _, _ in METRICS}
@@ -76,15 +80,17 @@ def main():
         ("no more runaways / late stops", f"runaway {d['runaway']:+.2f} points, late stop {d['late_stop']:+.2f} points",
          d["runaway"] <= 0 and d["late_stop"] <= 0),
     ]
-    lines = [f"# #8 phase 2: 2:4 sparse base_lm FFN ({a.name})", "",
+    lines = [f"# #8 phase 2: 2:4 sparse base_lm FFN ({a.name}{sfx})", "",
              "## Done when (#2: v2 set, `ref` cloning, int8, head start 8, the Arabic distilled LocDiT; paired "
              "against the dense model)", "", "| item | result | met |", "|---|---|---|"]
     lines += [f"| {i} | {r} | {'yes' if ok else '**no**'} |" for i, r, ok in items]
     lines += ["", "## Quality (1,320 clips; candidate (difference [95 % paired bootstrap]); bold: the interval excludes 0)",
               "", "| model | " + " | ".join(n for _, n, _ in METRICS) + " |", "|---|" + "---:|" * len(METRICS),
               "| dense | " + " | ".join(f"{base[k]['base']:.{dg}f}" for k, _, dg in METRICS) + " |",
-              "| pruned, no recovery | " + " | ".join(cell(c_pr, k, dg) for k, _, dg in METRICS) + " |",
-              "| **recovered** | " + " | ".join(cell(c_rec, k, dg) for k, _, dg in METRICS) + " |"]
+              "| pruned, no recovery | " + " | ".join(cell(c_pr, k, dg) for k, _, dg in METRICS) + " |"]
+    if c_first is not None:
+        lines.append("| recovered, first run | " + " | ".join(cell(c_first, k, dg) for k, _, dg in METRICS) + " |")
+    lines += [f"| **recovered{f' ({a.tag})' if a.tag else ''}** | " + " | ".join(cell(c_rec, k, dg) for k, _, dg in METRICS) + " |"]
     if levels:
         lines += ["", "## Time to first audio (examples/benchmark.py, dense and sparse alternating, mean of 2 runs)", "",
                   "| requests | dense avg / p95 | sparse avg / p95 | difference (avg) |", "|---:|---:|---:|---:|"]
@@ -97,9 +103,9 @@ def main():
               f"| validation loss | {vals[0]['val']['loss']:.4f} before recovery -> {best['val']['loss']:.4f} "
               f"(best, step {best['step']}) |"]
     summary = "\n".join(lines) + "\n"
-    open(os.path.join(a.sd, "summary.md"), "w").write(summary)
+    open(os.path.join(a.sd, f"summary{sfx}.md"), "w").write(summary)
     json.dump({"items": [{"item": i, "result": r, "met": ok} for i, r, ok in items], "recovered": c_rec,
-               "pruned": c_pr}, open(os.path.join(a.sd, "summary.json"), "w"), indent=1)
+               "pruned": c_pr}, open(os.path.join(a.sd, f"summary{sfx}.json"), "w"), indent=1)
     print(summary)
 
     q = lambda k, dg: f"{c_rec[k]['cand']:.{dg}f}"  # noqa: E731
