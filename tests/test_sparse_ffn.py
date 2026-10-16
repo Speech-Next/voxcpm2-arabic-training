@@ -119,6 +119,8 @@ def test_write_model_dir_links_and_copies(tmp_path):
     S.write_model_dir(str(src), str(tmp_path / "linked"), state, {"m": torch.zeros(2, 1, dtype=torch.uint8)})
     assert os.path.islink(tmp_path / "linked" / "config.json") and not (tmp_path / "linked" / "README.md").exists()
     assert (tmp_path / "linked" / S.MASKS).exists()
+    # the engine loads every top-level *.safetensors: only the model's weights may be there
+    assert sorted(p.name for p in (tmp_path / "linked").glob("*.safetensors")) == ["model.safetensors"]
     S.write_model_dir(str(src), str(tmp_path / "copied"), state, None, link=False)
     assert not os.path.islink(tmp_path / "copied" / "adapters") and not (tmp_path / "copied" / S.MASKS).exists()
     assert (tmp_path / "copied" / "adapters" / "a" / "lora_weights.safetensors").read_bytes() == b"x"

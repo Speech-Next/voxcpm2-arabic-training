@@ -49,7 +49,7 @@ import torch.nn.functional as F
 
 DEFAULT_MODEL = "/workspace/models/VoxCPM2-Arabic-Dialects"
 FFN = ("gate_proj", "up_proj", "down_proj")
-MASKS = "sparse24_masks.safetensors"
+MASKS = os.path.join("sparse24", "masks.safetensors")  # not at the top: the engine loads every top-level *.safetensors
 
 
 # --------------------------------------------------------------------------------------------- 2:4 masks and solve
@@ -427,9 +427,11 @@ def write_model_dir(src: str, out: str, state: dict, masks: dict | None, link: b
     save_file(state, os.path.join(out, "model.safetensors.tmp"), metadata={"format": "pt"})
     os.replace(os.path.join(out, "model.safetensors.tmp"), os.path.join(out, "model.safetensors"))
     if masks is not None:
+        os.makedirs(os.path.dirname(os.path.join(out, MASKS)), exist_ok=True)
         save_file(masks, os.path.join(out, MASKS))
     for name in os.listdir(src):
-        if name in ("model.safetensors", "README.md", MASKS) or name.startswith("."):
+        if name in ("model.safetensors", "README.md", "sparse24", "layers", "prune.json", "source.json") \
+                or name.startswith("."):
             continue
         s, d = os.path.join(src, name), os.path.join(out, name)
         if os.path.lexists(d):

@@ -37,6 +37,7 @@ STEPS=${STEPS:-2000}
 LR=${LR:-2e-5}
 TRAIN_ARGS=${TRAIN_ARGS:-}
 RANDOM_MODEL=${RANDOM_MODEL:-/workspace/runs/sparse-8/model-prune24-random}
+VOICE=${VOICE:-$(find /workspace/.hf_home/hub/datasets--VoxCPM-Kernel--Arabic-Hindi-Reference-Voices -name "*.wav" | sort | head -1)}
 E2E_LOG=${E2E_LOG:-/workspace/runs/sparse-8/e2e/log.txt}
 EVAL=/workspace/data/arabic/eval/runs
 LOG=${LOG:-/workspace/data/arabic/logs/$NAME.log}
@@ -48,12 +49,13 @@ CUR=start
 step() { CUR="$*"; echo "=== $(date +%F\ %T) $*"; }
 finish() {
   local rc=$?
-  if [ $rc -ne 0 ]; then
+  if [ $rc -ne 0 ] && [ -z "${STOPPED:-}" ]; then  # a failed step (not this script stopped: a restart continues)
     echo "FAILED (exit $rc) at step: $CUR. Log: $LOG" > "$DONE_FILE"
     echo "=== $(date +%F\ %T) FAILED at: $CUR"
   fi
 }
 trap finish EXIT
+trap 'STOPPED=1; exit 143' TERM INT
 gpu() {  # a GPU step, holding GPU_LOCK while it runs
   if [ -z "$GPU_LOCK" ]; then "$@"; return; fi
   ( flock 9; "$@" ) 9>>"$GPU_LOCK"
@@ -70,6 +72,16 @@ rm -rf "$RANDOM_MODEL"
 if [ ! -f "$SD/pruned/source.json" ]; then
   step "1. prune ($CALIB_BATCHES calibration batches)"
   gpu py prune --model "$MODEL" --out "$SD/pruned" --seed 1 --calib-batches "$CALIB_BATCHES"
+fi
+if [ ! -f "$SD/pruned-engine.ok" ]; then
+  step "1b. the engine on the pruned model (loads it, uses the sparse kernels, speaks)"
+  check() {
+    (cd "$ENGINE" && PYTHONPATH="$ENGINE" "$ENGINE_PY" examples/voice_clone.py --model "$SD/pruned" --voice "$VOICE" \
+       --dialect najdi --text "هلا والله، كيف حالك اليوم؟" --out "$SD/pruned-check.wav") > "$SD/pruned-check.log" 2>&1
+  }
+  gpu check || { tail -30 "$SD/pruned-check.log"; exit 1; }
+  grep -q "28 with a 2:4 sparse FFN" "$SD/pruned-check.log" || { echo "the engine did not use the sparse kernels"; exit 1; }
+  [ -s "$SD/pruned-check.wav" ] && touch "$SD/pruned-engine.ok"
 fi
 if ! grep -q '"complete": true' "$SD/targets/manifest.json" 2>/dev/null; then
   step "2. record the dense model's targets ($PATCHES target patches)"
