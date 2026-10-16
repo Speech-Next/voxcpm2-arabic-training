@@ -104,7 +104,8 @@ def main():
 
     q = lambda k, dg: f"{c_rec[k]['cand']:.{dg}f}"  # noqa: E731
     qb = lambda k, dg: f"{base[k]['base']:.{dg}f}"  # noqa: E731
-    ttfa_rows = "\n".join(f"| {lv} | {mean('dense', lv, 2):.0f} ms | {mean('sparse', lv, 2):.0f} ms |" for lv in levels)
+    ttfa_rows = "\n".join(f"| {lv} | {mean('dense', lv, 0):.0f} / {mean('dense', lv, 2):.0f} ms | "
+                          f"{mean('sparse', lv, 0):.0f} / {mean('sparse', lv, 2):.0f} ms |" for lv in levels)
     card = f"""---
 license: cc-by-nc-sa-4.0
 base_model: VoxCPM-Kernel/VoxCPM2-Arabic-Dialects
@@ -148,7 +149,8 @@ from another clip of the same speaker, int8 engine, the default distilled LocDiT
 | dense | {qb('cer_min', 2)} | {qb('wer_min', 2)} | {qb('utmos', 2)} | {qb('voice_sim', 3)} | {qb('late_stop', 2)} | {qb('runaway', 2)} |
 | **2:4 sparse (this model)** | {q('cer_min', 2)} | {q('wer_min', 2)} | {q('utmos', 2)} | {q('voice_sim', 3)} | {q('late_stop', 2)} | {q('runaway', 2)} |
 
-Time to first audio (p95), one A10, all requests sent at once:
+Time to first audio, one A10, all requests sent at once (average / p95 of 2 runs each, dense and sparse
+alternating):
 
 | requests at once | dense | 2:4 sparse |
 |---:|---:|---:|

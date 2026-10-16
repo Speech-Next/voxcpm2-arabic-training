@@ -45,4 +45,4 @@ def test_report_and_card(tmp_path):
     items = json.load(open(sd / "summary.json"))["items"]
     assert [i["met"] for i in items] == [True, True, True, True]
     card = (rel / "README.md").read_text()
-    assert card.startswith("---\nlicense: cc-by-nc-sa-4.0") and "| 200 | 93 ms | 86 ms |" in card
+    assert card.startswith("---\nlicense: cc-by-nc-sa-4.0") and "| 200 | 92 / 93 ms | 85 / 86 ms |" in card
