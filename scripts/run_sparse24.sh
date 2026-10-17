@@ -1,0 +1,172 @@
+#!/bin/bash
+# #8 phase 2, unattended: base_lm's FFN 2:4 sparse on the agreed data (distill/sparse_ffn.py), the evaluation, the
+# release directory (no upload).
+#     nohup scripts/run_sparse24.sh [name] &          log: /workspace/data/arabic/logs/<name>.log
+# Starts when WAIT_FOR exists (the coordinator's GPU order). Every GPU step holds GPU_LOCK (flock) while it runs; other
+# GPU jobs taking the same lock run between steps. Every finished step is skipped on a rerun (and prune, record and
+# train resume inside). At the end DONE_FILE holds "ok" and the summary's path, or the failed step and the log.
+# Steps:
+#   0. the pending alternating benchmark of phase 1 (the randomly pruned model) has run: that model is deleted
+#   1. prune   SparseGPT 2:4, calibration on CALIB_BATCHES batches            -> SD/pruned (a model directory)
+#   2. record  the dense model's targets on PATCHES target patches            -> SD/targets
+#   3. train   recovery, STEPS steps                                          -> SD/train (best, last)
+#   4. export  the recovered model                                            -> SD/model
+#   5. eval    #2 (v2 set, ref cloning, int8, head start 8, DIT) through the sparse-kernel engine: the dense model, the
+#              pruned one without recovery, the recovered one; both paired against the dense one
+#   6. ttfa    examples/benchmark.py, dense and sparse alternating, twice     -> SD/ttfa
+#   7. report  SD/summary.md (#8's Done-when items), the release directory RELEASE with its card
+# Environment (defaults below): ENGINE, ENGINE_PY, TRAIN_PY, SCORE_PY, MODEL, DIT, SD, RELEASE, WAIT_FOR, DONE_FILE,
+# GPU_LOCK, CALIB_BATCHES, PATCHES, STEPS, LR, TRAIN_ARGS (extra train options).
+# A retry of the recovery: TAG=<tag> trains into SD/train-<tag>, exports SD/model-<tag>, evaluates <name>-recovered-<tag>,
+# writes SD/summary-<tag>.md, release-<tag>/ and PHASE2_<TAG>_DONE; the pruned model, the recorded targets, the dense and
+# pruned evaluations and the TTFA runs (the same 2:4 pattern, so the same speed) are reused. DRY_RUN=1 prints the steps
+# that would run and runs nothing.
+#     TAG=r2 STEPS=3000 TRAIN_ARGS="--w-stop 10" WAIT_FOR=/dev/null nohup scripts/run_sparse24.sh &
+# DENSE_LAYERS="24 25 26 27": those base_lm layers keep their dense FFN. The pruned model is SD/pruned-<tag>, derived
+# from SD/pruned on the CPU when that exists (the pruning is sequential: the earlier layers are the same), else pruned;
+# the speed changes, so the TTFA runs are the tag's own (SD/ttfa-<tag>).
+set -euo pipefail
+NAME=${1:-sparse24}
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+ENGINE=${ENGINE:-/workspace/wt-sparse}
+ENGINE_PY=${ENGINE_PY:-/workspace/voxcpm2-arabic-dialects-turbo/.venv/bin/python}
+TRAIN_PY=${TRAIN_PY:-/workspace/envs/train/bin/python}
+SCORE_PY=${SCORE_PY:-/workspace/envs/eval/bin/python}
+MODEL=${MODEL:-/workspace/models/VoxCPM2-Arabic-Dialects}
+DIT=${DIT:-VoxCPM-Kernel/VoxCPM2-Arabic-Dialects-Distilled-DiT:student_k2_dmd.pt}
+SD=${SD:-/workspace/runs/sparse-8/phase2}
+TAG=${TAG:-}
+SFX=${TAG:+-$TAG}
+TRAIN_OUT=$SD/train$SFX
+MODEL_OUT=$SD/model$SFX
+DENSE_LAYERS=${DENSE_LAYERS:-}
+PRUNED=$SD/pruned${DENSE_LAYERS:+$SFX}
+TTFA_DIR=$SD/ttfa${DENSE_LAYERS:+$SFX}
+N_SPARSE=$((28 - $(echo $DENSE_LAYERS | wc -w)))
+RELEASE=${RELEASE:-/workspace/runs/sparse-8/release$SFX/VoxCPM2-Arabic-Dialects-Sparse24}
+WAIT_FOR=${WAIT_FOR:-/workspace/runs/teacher-v3.1/DONE}
+DONE_FILE=${DONE_FILE:-/workspace/runs/sparse-8/PHASE2${TAG:+_${TAG^^}}_DONE}
+DRY_RUN=${DRY_RUN:-}
+GPU_LOCK=${GPU_LOCK-/workspace/.gpu.lock}
+CALIB_BATCHES=${CALIB_BATCHES:-24}
+PATCHES=${PATCHES:-1500000}
+STEPS=${STEPS:-2000}
+LR=${LR:-2e-5}
+TRAIN_ARGS=${TRAIN_ARGS:-}
+RANDOM_MODEL=${RANDOM_MODEL:-/workspace/runs/sparse-8/model-prune24-random}
+VOICE=${VOICE:-$(find /workspace/.hf_home/hub/datasets--VoxCPM-Kernel--Arabic-Hindi-Reference-Voices -name "*.wav" | sort | head -1)}
+E2E_LOG=${E2E_LOG:-/workspace/runs/sparse-8/e2e/log.txt}
+EVAL=/workspace/data/arabic/eval/runs
+LOG=${LOG:-/workspace/data/arabic/logs/$NAME$SFX.log}
+mkdir -p "$SD" "$(dirname "$LOG")"
+[ -n "$DRY_RUN" ] || exec >> "$LOG" 2>&1
+if [ -f /workspace/.env ]; then set -a; . /workspace/.env; set +a; fi
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+CUR=start
+step() { CUR="$*"; echo "=== $(date +%F\ %T) $*"; }
+finish() {
+  local rc=$?
+  if [ $rc -ne 0 ] && [ -z "${STOPPED:-}" ]; then  # a failed step (not this script stopped: a restart continues)
+    echo "FAILED (exit $rc) at step: $CUR. Log: $LOG" > "$DONE_FILE"
+    echo "=== $(date +%F\ %T) FAILED at: $CUR"
+  fi
+}
+trap finish EXIT
+trap 'STOPPED=1; exit 143' TERM INT
+gpu() {  # a GPU step, holding GPU_LOCK while it runs
+  if [ -z "$GPU_LOCK" ]; then "$@"; return; fi
+  ( flock 9; "$@" ) 9>>"$GPU_LOCK"
+}
+py() { (cd "$REPO" && PYTHONPATH="$REPO" "$TRAIN_PY" -m arabic_voxcpm.distill.sparse_ffn "$@"); }
+if [ -n "$DRY_RUN" ]; then  # print what would run
+  DONE_FILE=/dev/null
+  gpu() { echo "  [gpu] $*"; }
+  py() { echo "  [cpu] sparse_ffn $*"; }
+  rm() { echo "  [cpu] rm $*"; }
+  report() { echo "  [cpu] sparse24_report.py $*"; }
+  WAIT_FOR=/dev/null E2E_LOG=/dev/null
+else
+  report() { (cd "$REPO" && PYTHONPATH="$REPO" "$SCORE_PY" scripts/sparse24_report.py "$@"); }
+fi
+
+step "$NAME: model $MODEL, dit $DIT, engine $ENGINE, runs $SD; waiting for $WAIT_FOR"
+until [ -e "$WAIT_FOR" ]; do sleep 60; done
+
+step "0. phase 1's alternating benchmark on the randomly pruned model, then that model is deleted"
+until [ -n "$DRY_RUN" ] || grep -q "^done" "$E2E_LOG" 2>/dev/null || ! pgrep -f "sparse-8/e2e[.]sh" > /dev/null; do sleep 60; done
+rm -rf "$RANDOM_MODEL"
+
+if [ ! -f "$PRUNED/source.json" ]; then
+  if [ -n "$DENSE_LAYERS" ] && [ -f "$SD/pruned/source.json" ]; then
+    step "1. derive the pruned model with layers $DENSE_LAYERS dense from $SD/pruned (CPU)"
+    # shellcheck disable=SC2086
+    py derive --pruned "$SD/pruned" --dense-layers $DENSE_LAYERS --out "$PRUNED"
+  else
+    step "1. prune ($CALIB_BATCHES calibration batches${DENSE_LAYERS:+, layers $DENSE_LAYERS dense})"
+    # shellcheck disable=SC2086
+    gpu py prune --model "$MODEL" --out "$PRUNED" --seed 1 --calib-batches "$CALIB_BATCHES" ${DENSE_LAYERS:+--dense-layers $DENSE_LAYERS}
+  fi
+fi
+if [ ! -f "$PRUNED-engine.ok" ]; then
+  step "1b. the engine on the pruned model (loads it, uses the sparse kernels on $N_SPARSE layers, speaks)"
+  check() {
+    (cd "$ENGINE" && PYTHONPATH="$ENGINE" "$ENGINE_PY" examples/voice_clone.py --model "$PRUNED" --voice "$VOICE" \
+       --dialect najdi --text "هلا والله، كيف حالك اليوم؟" --out "$PRUNED-check.wav") > "$PRUNED-check.log" 2>&1
+  }
+  gpu check || { tail -30 "$PRUNED-check.log"; exit 1; }
+  if [ -z "$DRY_RUN" ]; then
+    grep -q "$N_SPARSE with a 2:4 sparse FFN" "$PRUNED-check.log" || { echo "the engine did not use the sparse kernels"; exit 1; }
+    [ -s "$PRUNED-check.wav" ] && touch "$PRUNED-engine.ok"
+  fi
+fi
+if ! grep -q '"complete": true' "$SD/targets/manifest.json" 2>/dev/null; then
+  step "2. record the dense model's targets ($PATCHES target patches)"
+  gpu py record --model "$MODEL" --out "$SD/targets" --patches "$PATCHES"
+fi
+if [ ! -f "$TRAIN_OUT/DONE" ]; then
+  step "3. train ($STEPS steps, lr $LR $TRAIN_ARGS) -> $TRAIN_OUT"
+  # shellcheck disable=SC2086
+  gpu py train --pruned "$PRUNED" --targets "$SD/targets" --out "$TRAIN_OUT" --steps "$STEPS" --lr "$LR" $TRAIN_ARGS
+fi
+if [ ! -f "$MODEL_OUT/model.safetensors" ]; then
+  step "4. export the recovered model -> $MODEL_OUT"
+  py export --pruned "$PRUNED" --ckpt "$TRAIN_OUT/best" --out "$MODEL_OUT"
+fi
+
+evalrun() {  # run name, model, [run.py args]: generate (once) -> score -> report
+  local name=$1 model=$2; shift 2
+  (cd "$REPO" && PYTHONPATH="$REPO" "$SCORE_PY" -m arabic_voxcpm.eval.run --engine-python "$ENGINE_PY" \
+     --engine-path "$ENGINE" --name "$name" --model "$model" --set v2 --mode ref --dit "$DIT" --precision int8 \
+     --head-tokens 8 --gpu-memory-utilization 0.45 --kv-blocks 256 "$@")
+}
+for spec in "$NAME-dense:$MODEL:dit-adapters-dmd" "$NAME-pruned:$SD/pruned:$NAME-dense" "$NAME-recovered$SFX:$MODEL_OUT:$NAME-dense"; do
+  IFS=: read -r name model base <<< "$spec"
+  if [ ! -f "$EVAL/$name/report.json" ]; then
+    step "5. eval $name ($model, baseline $base)"
+    gpu evalrun "$name" "$model" --baseline "$base"
+  fi
+done
+
+bench() {  # out file, model: one benchmark run under the lock
+  (cd "$ENGINE" && PYTHONPATH="$ENGINE" NANOVLLM_BUSY_POLL_S=30 "$ENGINE_PY" examples/benchmark.py --model "$2" \
+     --levels 1,8,64,200 --rounds 5 > "$1.tmp" 2> "$1.err" && mv "$1.tmp" "$1")
+}
+if [ -n "$DRY_RUN" ]; then bench() { echo "  [gpu] benchmark.py --model $2 > $1"; }; fi
+mkdir -p "$TTFA_DIR"
+for i in 1 2; do  # dense and sparse alternating, twice; one lock per run (other jobs may run between)
+  for kind in dense sparse; do
+    if [ ! -f "$TTFA_DIR/$kind-$i.txt" ]; then
+      step "6. TTFA: $kind, run $i -> $TTFA_DIR"
+      if [ "$kind" = dense ]; then m=$MODEL; else m=$MODEL_OUT; fi
+      if [ -n "$DRY_RUN" ]; then bench "$TTFA_DIR/$kind-$i.txt" "$m"; else gpu bench "$TTFA_DIR/$kind-$i.txt" "$m"; fi
+    fi
+  done
+done
+
+step "7. summary and the release directory"
+if [ ! -f "$RELEASE/model.safetensors" ]; then
+  py export --pruned "$PRUNED" --ckpt "$TRAIN_OUT/best" --out "$RELEASE" --copy
+fi
+report --name "$NAME" --sd "$SD" --release "$RELEASE" --tag "$TAG" --ttfa "$TTFA_DIR" --pruned "$PRUNED"
+echo "ok: $SD/summary$SFX.md, release directory $RELEASE (not uploaded)" > "$DONE_FILE"
+step "done"
