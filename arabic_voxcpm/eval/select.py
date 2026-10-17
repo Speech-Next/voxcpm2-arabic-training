@@ -45,4 +45,4 @@ if __name__ == "__main__":
     print(json.dumps(table, indent=1), file=sys.stderr)
     if a.json:
         json.dump(table, open(a.json, "w"), indent=1)
-    print(best)
+    print(os.path.basename(best))  # the run's name (run.py --name)

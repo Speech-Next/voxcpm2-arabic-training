@@ -44,3 +44,12 @@ def test_select(tmp_path):
     assert best == good and table["guards_passed"] and not table["candidates"]["a"]["passes"]
     best, table = select.choose(ref, [best_but_garbled, runaway])  # nothing passes: the best UTMOS, flagged
     assert best == best_but_garbled and not table["guards_passed"]
+
+
+def test_select_prints_the_run_name(tmp_path, capsys, monkeypatch):
+    import sys
+    ref, good = run(tmp_path, "ref", 2.10, 0.050, 0.0), run(tmp_path, "good", 2.30, 0.050, 0.0)
+    monkeypatch.setattr(sys, "argv", ["select", "--reference", ref, good])
+    import runpy
+    runpy.run_module("arabic_voxcpm.eval.select", run_name="__main__")
+    assert capsys.readouterr().out.strip() == "good"  # a name, as run.py --name takes, not the run's path
