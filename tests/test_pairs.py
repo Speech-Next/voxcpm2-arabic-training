@@ -1,4 +1,3 @@
-import csv
 import json
 import os
 
@@ -51,7 +50,7 @@ class FakeWhisper:
         self.by_stem = by_stem
 
     def words(self, path):
-        stem = os.path.basename(path).split("__")[0].removesuffix(".wav")
+        stem = os.path.basename(path).split("__")[0].removesuffix(".wav")  # a cut clip is in audio/
         ws = self.by_stem[stem]
         if "__" in path:
             dur = sf.info(path).duration
@@ -87,10 +86,26 @@ def test_build_skips_openings_without_words(tmp_path, monkeypatch):
     for p in got:
         assert p["text"] == "والعكس أيضا" and p["a"]["asr"] == "والعكس أيضا"
         for side in "ab":
-            info = sf.info(out / "data" / f"{p['clip']}__{side}.wav")
+            info = sf.info(out / "audio" / f"{p['clip']}__{side}.wav")
             assert info.duration == pytest.approx(1.04 + pairs.GAP_S, abs=1e-3)
-    rows = list(csv.DictReader(open(out / "data" / "metadata.csv", encoding="utf-8")))
-    assert len(rows) == 2 * len(got) and {r["version"] for r in rows} == {"main", "PR"}
-    assert not os.path.exists(out / "data" / "eg-0_s2000__a.wav")
-    md = pairs.card(got, skipped, ("main", "PR"), "t", "n", gated_from="VoxCPM-Kernel/Arabic-Hindi-Reference-Voices")
-    assert "data/ma-0_s2000__b.wav" in md and "Gated" in md and "| dialect | words |" in md
+    saved = json.load(open(out / "pairs.json", encoding="utf-8"))
+    assert saved["labels"] == ["main", "PR"] and [p["clip"] for p in saved["pairs"]] == [p["clip"] for p in got]
+    assert not os.path.exists(out / "audio" / "eg-0_s2000__a.wav")
+    md = pairs.card(got, skipped, ("main", "PR #23"), "t", "n", gated_from="VoxCPM-Kernel/Arabic-Hindi-Reference-Voices")
+    assert "audio/ma-0_s2000__b.wav" in md and "Gated" in md and "| dialect | words |" in md
+    assert "path: data/*.parquet" in md and "  - name: pr_23\n    dtype: audio" in md
+
+
+def test_table_has_both_versions_as_audio_columns(tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    (tmp_path / "audio").mkdir()
+    rows = [{"clip": "eg-1_s2000", "group": "eg", "text": "والعكس أيضا"}]
+    for side in "ab":
+        sf.write(tmp_path / "audio" / f"eg-1_s2000__{side}.wav", np.zeros(1600, np.float32), 16000)
+    t = pq.read_table(pairs.write_table(str(tmp_path), rows, ("main", "PR #23")))
+    assert t.column_names == ["dialect", "words", "main", "pr_23"]
+    row = t.to_pylist()[0]
+    assert row["dialect"] == "المصرية (eg)" and row["pr_23"]["path"] == "eg-1_s2000__b.wav"
+    assert row["main"]["bytes"] == (tmp_path / "audio" / "eg-1_s2000__a.wav").read_bytes()
+    features = json.loads(t.schema.metadata[b"huggingface"])["info"]["features"]
+    assert features["main"] == {"_type": "Audio"} and features["pr_23"] == {"_type": "Audio"}

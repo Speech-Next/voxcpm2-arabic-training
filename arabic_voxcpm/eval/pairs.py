@@ -9,19 +9,20 @@ click). Whisper large-v3 word timestamps place the cut, and a second pass on the
 
 An item that fails the word check in one of the runs is skipped and reported: Whisper hears no word in the first
 --max-onset seconds, the opening does not match the text's first word (hallucinated filler, "اشتركوا في القناة", is
-what Whisper writes on noise), or the cut clip loses its words. Written: <dir>/data/ (wavs, metadata.csv), <dir>/README.md (the card: a table with
-the words and both players per clip) and <dir>/skipped.json. --push uploads the folder (replacing data/) as a gated
-dataset: the voices are cloned from the gated reference set.
+what Whisper writes on noise), or the cut clip loses its words. Written: <dir>/audio/ (the wavs), <dir>/data/ (one
+parquet file, a row per pair: dialect, words and both versions as audio columns, so the dataset viewer plays them
+side by side), <dir>/README.md (the card), <dir>/pairs.json and <dir>/skipped.json. --push uploads the folder
+(replacing data/ and audio/) as a gated dataset: the voices are cloned from the gated reference set.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import difflib
 import json
 import os
 import random
+import re
 from collections import defaultdict
 
 import numpy as np
@@ -75,7 +76,7 @@ def cut(audio: np.ndarray, sr: int, at: float) -> np.ndarray:
 def build(a: str, b: str, labels: tuple[str, str], out: str, groups=None, n: int = 1, min_s: float = 1.0,
           min_words: int = 2, max_onset: float = 1.0, seed: int = 0, model=None,
           device: str = "cuda") -> tuple[list[dict], list[dict]]:
-    """(pairs, skipped): the pairs written to out/data, and the items skipped for an opening without words."""
+    """(pairs, skipped): the pairs written to out/audio, and the items skipped by the word check."""
     import soundfile as sf
 
     ca, cb = common.run_config(a), common.run_config(b)
@@ -93,7 +94,7 @@ def build(a: str, b: str, labels: tuple[str, str], out: str, groups=None, n: int
         if keys:
             by_group[it["group"]].append((it, keys[0]))
     rng = random.Random(seed)
-    data = os.path.join(out, "data")
+    data = os.path.join(out, "audio")
     os.makedirs(data, exist_ok=True)
     pairs, skipped = [], []
     for g in groups or sorted(by_group):
@@ -137,15 +138,40 @@ def build(a: str, b: str, labels: tuple[str, str], out: str, groups=None, n: int
                           "a": {"asr": clips["a"][3], "s": round(clips["a"][4], 2)},
                           "b": {"asr": clips["b"][3], "s": round(clips["b"][4], 2)}})
             got += 1
-    with open(os.path.join(data, "metadata.csv"), "w", encoding="utf-8", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["file_name", "clip", "group", "version", "text", "asr", "seconds"])
-        for p in pairs:
-            for side, label in zip("ab", labels):
-                w.writerow([f"{p['clip']}__{side}.wav", p["clip"], p["group"], label, p["text"], p[side]["asr"],
-                            p[side]["s"]])
+    json.dump({"labels": list(labels), "pairs": pairs}, open(os.path.join(out, "pairs.json"), "w", encoding="utf-8"),
+              indent=1, ensure_ascii=False)
     json.dump(skipped, open(os.path.join(out, "skipped.json"), "w", encoding="utf-8"), indent=1, ensure_ascii=False)
     return pairs, skipped
+
+
+def column(label: str) -> str:
+    """A version's column name: "PR #23" -> pr_23."""
+    return re.sub(r"\W+", "_", label.lower()).strip("_") or "version"
+
+
+def write_table(out: str, pairs: list[dict], labels: tuple[str, str]) -> str:
+    """out/data/test-00000-of-00001.parquet: a row per pair (dialect, words, both versions as Hugging Face Audio
+    columns: struct of the wav bytes and its name, with the features in the schema metadata)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    ca, cb = (column(x) for x in labels)
+    audio = pa.struct([("bytes", pa.binary()), ("path", pa.string())])
+    cols = {"dialect": [], "words": [], ca: [], cb: []}
+    for p in pairs:
+        cols["dialect"].append(f"{GROUP_AR.get(p['group'], p['group'])} ({p['group']})")
+        cols["words"].append(p["text"])
+        for c, side in ((ca, "a"), (cb, "b")):
+            name = f"{p['clip']}__{side}.wav"
+            cols[c].append({"bytes": open(os.path.join(out, "audio", name), "rb").read(), "path": name})
+    features = {"dialect": {"dtype": "string", "_type": "Value"}, "words": {"dtype": "string", "_type": "Value"},
+                ca: {"_type": "Audio"}, cb: {"_type": "Audio"}}
+    schema = pa.schema([("dialect", pa.string()), ("words", pa.string()), (ca, audio), (cb, audio)],
+                       metadata={"huggingface": json.dumps({"info": {"features": features}})})
+    os.makedirs(os.path.join(out, "data"), exist_ok=True)
+    path = os.path.join(out, "data", "test-00000-of-00001.parquet")
+    pq.write_table(pa.table(cols, schema=schema), path)
+    return path
 
 
 def card(pairs: list[dict], skipped: list[dict], labels: tuple[str, str], title: str, note: str,
@@ -153,10 +179,14 @@ def card(pairs: list[dict], skipped: list[dict], labels: tuple[str, str], title:
     la, lb = labels
     rows = "\n".join(
         f"| {GROUP_AR.get(p['group'], p['group'])} ({p['group']}) | {p['text']} | {p['a']['s']:.1f} s | "
-        f"[{la}](data/{p['clip']}__a.wav) | [{lb}](data/{p['clip']}__b.wav) |" for p in pairs)
-    lines = ["---", "configs:", "- config_name: default", "  data_files:", "  - split: test", "    path: data/*",
-             "license: other", "task_categories:", "- text-to-speech", "language:", "- ar", "---", "", f"# {title}", "",
-             note, "",
+        f"[{la}](audio/{p['clip']}__a.wav) | [{lb}](audio/{p['clip']}__b.wav) |" for p in pairs)
+    lines = ["---", "configs:", "- config_name: default", "  data_files:", "  - split: test", "    path: data/*.parquet",
+             "dataset_info:", "  features:", "  - name: dialect", "    dtype: string", "  - name: words",
+             "    dtype: string", f"  - name: {column(la)}", "    dtype: audio", f"  - name: {column(lb)}",
+             "    dtype: audio", "license: other", "task_categories:", "- text-to-speech", "language:", "- ar", "---",
+             "", f"# {title}", "", note, "",
+             f"The dataset viewer above plays both versions of a sentence side by side: one row per dialect, the "
+             f"`{column(la)}` and `{column(lb)}` columns.", "",
              f"Each clip is the opening of a sentence, cut after whole words (at least {min_words} words and "
              f"{min_s:g} s), checked with Whisper large-v3 so that the words are heard.", "",
              f"| dialect | words | length | {la} | {lb} |", "|---|---|---:|---|---|", rows]
@@ -175,7 +205,7 @@ def push(out: str, repo: str, message: str) -> None:
 
     api = HfApi()
     api.create_repo(repo, repo_type="dataset", exist_ok=True)
-    api.upload_folder(repo_id=repo, repo_type="dataset", folder_path=out, delete_patterns=["data/*"],
+    api.upload_folder(repo_id=repo, repo_type="dataset", folder_path=out, delete_patterns=["data/*", "audio/*"],
                       commit_message=message)
     api.update_repo_settings(repo, repo_type="dataset", gated="manual")
 
@@ -201,6 +231,7 @@ if __name__ == "__main__":
     pairs, skipped = build(common.run_dir(args.a), common.run_dir(args.b), labels, args.out, args.groups,
                            args.n_per_group, args.min_s, args.min_words, args.max_onset, args.seed,
                            device=args.device)
+    write_table(args.out, pairs, labels)
     open(os.path.join(args.out, "README.md"), "w", encoding="utf-8").write(
         card(pairs, skipped, labels, args.title, args.note, args.min_words, args.min_s,
              "VoxCPM-Kernel/Arabic-Hindi-Reference-Voices"))
