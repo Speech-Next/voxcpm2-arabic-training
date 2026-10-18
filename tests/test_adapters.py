@@ -65,10 +65,13 @@ def engine_loader():
         scaling: float
 
     @dataclasses.dataclass
-    class LoRAModelPayload:
+    class LoRAModelPayload:  # as the engine's (its tagged-adapter fields since engine #22)
         modules: dict
         rank: int
         alpha: float
+        tag_embed: object = None
+        tag_row_start: int = -1
+        exact_merge: bool = False
 
     stubs = {"nanovllm_voxcpm.engine.lora_manager": dict(LoRAModulePayload=LoRAModulePayload,
                                                          LoRAModelPayload=LoRAModelPayload),
