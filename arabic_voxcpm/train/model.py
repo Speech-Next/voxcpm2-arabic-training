@@ -141,6 +141,19 @@ def load_trainable(model, path: str) -> None:
     model.load_state_dict(state, strict=False)
 
 
+def load_init(model, path: str) -> dict:
+    """Start a run from another run's checkpoint (its trainable tensors only: a fresh optimizer and schedule), e.g. a
+    continuation with other corpus weights. The LoRA and the dialect list must be the checkpoint's: other ranks or
+    targets would not load, other dialects would shift the tag rows. Returns the checkpoint's train_state.json."""
+    st = json.load(open(os.path.join(path, "train_state.json")))
+    if st["lora"] != model.lora_cfg:
+        raise ValueError(f"LoRA of {path} {st['lora']} != this run's {model.lora_cfg}")
+    if st.get("dialects", dialects.DIALECTS) != dialects.DIALECTS:
+        raise ValueError(f"dialects of {path} differ from this code's: {st['dialects']}")
+    load_trainable(model, path)
+    return st
+
+
 def export_merged(src_dir: str, ckpt: str, out_dir: str, only: tuple[str, ...] | None = None,
                   lora_scale: float = 1.0) -> None:
     """A plain VoxCPM2 model directory: every LoRA merged into its weight (W + s * B @ A), the tag rows written into
